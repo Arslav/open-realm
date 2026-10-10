@@ -102,7 +102,8 @@ static uint32_t const save_commit = MAKEFOURCC('W', '3', 'O', 'K');
 /* Version 85 persists per-player fog-of-war exploration. */
 /* Version 86 persists neutral hostile creep guard state. */
 /* Version 87 persists creep guard return recovery state. */
-static uint32_t const save_version = 87;
+/* Version 88 stores a single creep guard lifecycle phase. */
+static uint32_t const save_version = 88;
 #define SAVE_STREAM_BUFFER (1u << 20) // bytes; save files are several MB of field writes, so a large stdio buffer avoids per-4 KB syscalls
 #define MAX_SAVE_STRING (1u << 20) // bytes; bounds quest-string allocations from corrupt saves
 #define MAX_SAVE_GROUP_HANDLES 65536u // corrupt-save bound only; runtime group registry itself grows dynamically
@@ -764,8 +765,7 @@ static field_t const movement_fields[] = {
     F(edictMovement_s, creep_guard_return_retries, F_INT),
     F(edictMovement_s, creep_guard_retry_at_ms, F_INT),
     F(edictMovement_s, creep_guard_enabled, F_INT),
-    F(edictMovement_s, creep_guard_auto_combat, F_INT),
-    F(edictMovement_s, creep_guard_returning, F_INT),
+    F(edictMovement_s, creep_guard_phase, F_INT),
     F(edictMovement_s, explicit_allied_attack, F_INT),
     F(edictMovement_s, cargo_unload_pending, F_INT),
     F(edictMovement_s, cargo_unload_ability, F_INT),
