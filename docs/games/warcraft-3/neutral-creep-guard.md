@@ -50,7 +50,7 @@ Automatic preplaced-unit registration and replacement parity are incomplete.
 
 ## Persistence and testing
 
-Save version **87** replaces the two mutually exclusive guard-phase booleans
+Save version **88** replaces the two mutually exclusive guard-phase booleans
 with a serialized lifecycle enum. Older saves are rejected in accordance with
 repository policy. Existing tests cover lethal assistance, retry bookkeeping,
 anchor independence, enabled/disabled policy, and state round-trips.
@@ -89,3 +89,11 @@ Regressions exercise collision-corrected CreateUnit placement, an active
 return Move disabled mid-flight, preservation of an explicit Move, and
 owner transfer without resetting the Stop anchor.
 Run the affected build and `make test` locally before merging.
+
+## Unit transformations
+
+`G_TransformUnitType` rebinds the same unit through `SP_SpawnUnit` rather than
+creating a new creep. It restores the existing Neutral Hostile guard anchor,
+enabled policy, lifecycle phase, and retry/damage timestamps after rebinding so
+a morph away from the original position does not relocate its home or re-enable
+a deliberately disabled guard. Newly created units still initialize normally.

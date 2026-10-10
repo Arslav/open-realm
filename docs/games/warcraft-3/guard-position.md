@@ -46,14 +46,13 @@ This prevents an old Stop location from unexpectedly taking control after a late
 
 ## Retail guard-system follow-up
 
-Warcraft also exposes a broader AI/creep guard-position system (`SetUnitCreepGuard`, `RemoveGuardPosition`, `RecycleGuardPosition`) and neutral-creep leash constants such as GuardDistance, MaxGuardDistance, and GuardReturnTime. Those behaviors are related but are not folded into this player Stop patch:
-
-- `RemoveGuardPosition` and `RecycleGuardPosition` are still JASS placeholders in OpenRealm.
-- `SetUnitCreepGuard` is declared by `common.txt` but does not yet have a native implementation here.
-- neutral-creep 600/1000/5-style leash timing needs its own owner/AI policy and damage-timestamp state rather than being guessed onto player units.
-- forced relocation does not rewrite a generic retail creep guard point, whereas Hold Position remains a non-anchor policy. Keep those systems separate.
-
-Implement the broader creep/JASS guard layer as a follow-up on top of the shared guard-return movement primitive rather than changing Stop semantics again.
+Warcraft also exposes a broader AI/creep guard-position system and neutral-creep
+leash constants. The integrated implementation is described in
+[neutral-creep-guard.md](neutral-creep-guard.md). `SetUnitCreepGuard`,
+`RemoveGuardPosition`, and `RecycleGuardPosition` are implemented, but the
+computer-AI guard-post natives currently support the existing bot roster rather
+than full retail preplaced-guard replacement semantics. The Neutral Hostile
+leash remains independent of the player Stop anchor.
 
 ## Neutral Hostile camp assistance (Stage B)
 
@@ -86,6 +85,6 @@ world scan is added: only a confirmed surviving positive-damage event broadcasts
 
 - A positive post-mitigation hit, including a killing blow, sends one camp assistance notification before death teardown. The victim still receives damage/retaliation callbacks only when surviving.
 - A return Move that terminates away from its anchor remains in return policy. After a one-second simulation-time backoff the creep retries, at most three times; exhaustion ends the attempt without teleporting. Scripted orders clear recovery state. Immobilization does not cause a busy retry loop.
-- `creep_guard_return_retries` and `creep_guard_retry_at_ms` persist through save/load. The integrated lifecycle phase uses save format version 87, rejecting earlier layouts according to repository policy.
+- `creep_guard_return_retries` and `creep_guard_retry_at_ms` persist through save/load. The integrated lifecycle phase uses save format version 88, rejecting earlier layouts according to repository policy.
 - Non-finite, negative or float-overflowing Misc values use the documented defaults; the hard leash is never shorter than the soft leash.
 - The integrated subsystem includes a real return-Move save round-trip and scheduler regression; pathfinder callback and retail parity checks remain follow-up work. See [neutral-creep-guard.md](neutral-creep-guard.md).
