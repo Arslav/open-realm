@@ -1109,7 +1109,7 @@ unitMeta_t const UnitsMetaData[] = {
     M("uma1",UnitProfile,attack[0].arc,BZ_FIELD_FLOAT),
     M("uma2",UnitProfile,attack[1].arc,BZ_FIELD_FLOAT),
     M("ua1m",UnitProfile,attack[0].art,BZ_FIELD_CSTR),
-    M("ua2m",UnitProfile,attack[0].art,BZ_FIELD_CSTR),
+    M("ua2m",UnitProfile,attack[1].art,BZ_FIELD_CSTR),
     M("umh1",UnitProfile,attack[0].homing,BZ_FIELD_BOOL),
     M("umh2",UnitProfile,attack[1].homing,BZ_FIELD_BOOL),
     M("ua1z",UnitProfile,attack[0].speed,BZ_FIELD_FLOAT),

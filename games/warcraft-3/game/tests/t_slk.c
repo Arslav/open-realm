@@ -808,6 +808,15 @@ TEST(wc3_slk, fourcc_metadata_reads_rows_cached_on_edict) {
     T_ASSERT(UnitMetaBoolean(&unit, MAKEFOURCC('u','h','h','b')));
 }
 
+/* ua2m is the second weapon's missile art; it must not alias attack 1 (ua1m). */
+TEST(wc3_slk, fourcc_metadata_maps_each_attack_missile_art) {
+    UnitProfile_t profile = { .attack = { { .art = "Abilities\\Weapons\\RifleImpact\\RifleImpact.mdl" }, { .art = "Abilities\\Weapons\\Cannonball\\Cannonball.mdl" } } };
+    edict_t unit = { .data.UnitProfile = &profile };
+
+    T_STREQ(UnitMetaString(&unit, MAKEFOURCC('u','a','1','m')), profile.attack[0].art);
+    T_STREQ(UnitMetaString(&unit, MAKEFOURCC('u','a','2','m')), profile.attack[1].art);
+}
+
 /* -----------------------------------------------------------------------
  * 2.  In-memory SLK parsing (parse_slk_string)
  * --------------------------------------------------------------------- */
