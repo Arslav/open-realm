@@ -102,7 +102,7 @@ This patch does **not** use floating text as a reason to redesign incomplete gam
 - anchor ten world units above the source position;
 - select the generic `TE_FLOATING_TEXT` event;
 - use the fallback gold colour/timing/font size when Misc data is absent;
-- encode 0/60 px/s built-in motion; and
+- encode 0/60 px/s built-in motion;
 - unicast once per eligible connected viewer (credited player and advanced-control allies; never multicast); and
 - skip networking entirely when no viewer is eligible, before serializing any payload.
 

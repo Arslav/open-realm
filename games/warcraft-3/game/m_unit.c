@@ -1382,12 +1382,6 @@ static void unit_timed_status_log(cstring_t stage, edict_t const *ent, heroabili
             unit_statusremainingfraction(status));
 }
 
-static bool unit_status_stuns(uint32_t code) {
-    return code == MAKEFOURCC('B', 's', 't', 'u') || code == MAKEFOURCC('B', 'U', 's', 'l') ||
-           code == MAKEFOURCC('B', 'p', 'o', 's') || /* Possession channel victim lock */
-           code == MAKEFOURCC('B', 's', 't', 'a'); /* Stasis Trap stun */
-}
-
 static bool unit_status_timedlife(uint32_t code) {
     return code == MAKEFOURCC('B', 'T', 'L', 'F');
 }

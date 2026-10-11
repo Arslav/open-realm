@@ -1532,6 +1532,8 @@ TEST(renderer_shader, model_fog_masks_unshaded_fragments) {
     T_NOT_NULL(strstr(shader_src, "col.rgb *= fog;"));
 }
 
+/* gs_load assigns sampler units in declaration order (texture, shadowmap, fogOfWar);
+ * the world frame binds the fog texture on unit 2, so the model layout must keep that slot. */
 TEST(renderer_shader, model_fog_sampler_uses_world_fog_texture_unit) {
     FOR_LOOP(instancing, 2) {
         modelProg_t shader = {0};

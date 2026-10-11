@@ -596,9 +596,6 @@ static void R_LoadModelShader(modelProg_t *out, bool instancing) {
     R_LoadShader(&sd_model, R_ShaderDefines(instancing), out);
 
     out->state.alphaCutoff = 0.5f;
-#ifdef USE_FOGOFWAR
-    out->state.fogOfWar = 2;
-#endif
 }
 
 /* Returns the shared model shader, compiling it on first call. All three model
