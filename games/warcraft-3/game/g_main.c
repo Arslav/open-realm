@@ -1108,14 +1108,17 @@ void G_RequestRestartGame(bool do_score_screen) {
 }
 
 void G_RequestLoadGameMenu(void) {
-    G_GameResultDebug("request LoadGameMenu result_dialog=1");
+    bool shown = false;
+    G_GameResultDebug("request LoadGameMenu");
     FOR_LOOP(i, game.max_clients) {
         gameClient_t *client = game.clients + i;
         edict_t *ent;
         if (!client->connected) continue;
         ent = G_GetPlayerEntityByNumber(client->ps.number);
-        if (ent) UI_ShowGameMenuLoad(ent, true);
+        if (ent) shown |= UI_ShowGameMenuLoad(ent);
     }
+    /* Without the authored in-game panel, the front-end load screen beats a paused map with no UI. */
+    if (!shown) gi.MenuAction("menu", "menu_loadgame");
 }
 
 void G_RequestLoadGameNamed(cstring_t name) {

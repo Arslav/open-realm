@@ -54,6 +54,7 @@ G_ClientCommand
   menu_load_named <name> -> G_RequestLoadGameNamed -> deferred MenuAction("load", name)
   menu_save_quick        -> compatibility wrapper for `Quick Save` / `quick`
   menu_load_quick        -> existing quick-load/front-end compatibility path
+  (every page: Return to Game disabled + NO_ESCAPE while a single-player client is removed with a result)
 
 hud/hud_menu.c
   EscMenuMainPanelGame_Load()

@@ -1356,6 +1356,139 @@ TEST(wc3_game, ingame_options_commands_write_categories_then_sound_window) {
     hud.save_menu = old_save_menu;
     game.clients[0].connected = old_connected;
 }
+
+/* Capture the svc_window open header: byte svc_window, byte UI_WINDOW_OPEN, long id, long class, long flags. */
+static uint32_t menu_window_flags, menu_window_state, menu_window_opens;
+static void menu_window_test_write(pfWriteType_t type, void const *data) {
+    int32_t const value = type == PF_BYTE || type == PF_LONG ? *(int32_t const *)data : -1;
+    if (menu_window_state == 0) menu_window_state = type == PF_BYTE && value == svc_window;
+    else if (menu_window_state == 1) menu_window_state = type == PF_BYTE && value == UI_WINDOW_OPEN ? 2 : 0;
+    else if (menu_window_state < 4) menu_window_state++;
+    else menu_window_flags = (uint32_t)value, menu_window_opens++, menu_window_state = 0;
+}
+static char menu_action_capture[64];
+static void menu_test_action(cstring_t action, cstring_t arg) {
+    snprintf(menu_action_capture, sizeof(menu_action_capture), "%s %s", action, arg);
+}
+
+/* Authored Esc-menu controls plus a ready Load panel; one placeholder stands in for the controls under test. */
+static FRAMEDEF menu_test_placeholder;
+static edict_t *menu_test_setup(void) {
+    edict_t *player = &g_edicts[0];
+    frameDef_t *root, *backdrop;
+
+    setup_test_world();
+    UI_ResetHud();
+    root = UI_Spawn(FT_FRAME, NULL);
+    backdrop = UI_Spawn(FT_FRAME, root);
+    hud.menu.EscMenuMainPanel = root;
+    hud.menu.EscMenuBackdrop = backdrop;
+    hud.menu.MainPanel = UI_Spawn(FT_FRAME, backdrop);
+    hud.menu.EndGamePanel = UI_Spawn(FT_FRAME, backdrop);
+    hud.menu.ReturnButton = UI_Spawn(FT_GLUETEXTBUTTON, hud.menu.MainPanel);
+    hud.options.EscMenuOptionsPanel = UI_Spawn(FT_FRAME, backdrop);
+    hud.options.OptionsPanel = UI_Spawn(FT_FRAME, hud.options.EscMenuOptionsPanel);
+    memset(&menu_test_placeholder, 0, sizeof(menu_test_placeholder));
+    hud.save_menu.EscMenuSaveGamePanel = hud.save_menu.EscMenuSaveLoadContainer = &menu_test_placeholder;
+    hud.save_list_art.MapListBox = hud.save_list_art.MapListBoxBackdrop = &menu_test_placeholder;
+    hud.save_list_art.MapListScrollBar = &menu_test_placeholder;
+    hud.save_menu.SaveOnly = hud.save_menu.LoadOnly = &menu_test_placeholder;
+    hud.save_menu.SaveGameFileEditBox = hud.save_menu.SaveGameFileEditBoxText = &menu_test_placeholder;
+    hud.save_menu.SaveGameSaveButton = hud.save_menu.SaveGameCancelButton = &menu_test_placeholder;
+    hud.save_menu.LoadGameLoadButton = &menu_test_placeholder;
+    hud.save_menu.LoadGameCancelButton = UI_Spawn(FT_GLUETEXTBUTTON, backdrop);
+    UI_InitFrame(&hud.save_list, FT_LISTBOX);
+    UI_SetParent(&hud.save_list, hud.save_list_art.MapListBox);
+    player->client = &game.clients[0];
+    player->client->connected = true;
+    player->client->ps.number = 0;
+    menu_action_capture[0] = '\0';
+    menu_window_opens = menu_window_state = menu_window_flags = 0;
+    return player;
+}
+
+TEST(wc3_game, ingame_menu_stays_locked_after_cancelling_result_load) {
+    __typeof__(gi.Write) old_write = gi.Write;
+    __typeof__(gi.unicast) old_unicast = gi.unicast;
+    __typeof__(gi.MenuAction) old_action = gi.MenuAction;
+    edict_t *player = menu_test_setup();
+
+    gi.Write = menu_window_test_write;
+    gi.unicast = options_window_test_unicast;
+    gi.MenuAction = menu_test_action;
+    /* Blizzard.j's CustomDefeatBJ removes the player before the defeat dialog offers Load. */
+    T_ASSERT(G_RemovePlayerWithResult(0, 1));
+
+    G_ClientCommand(player, 1, (cstring_t[]){ "gameresult_load" });
+    T_EQ(menu_window_opens, 1u);
+    T_ASSERT(menu_window_flags & UI_WINDOW_NO_ESCAPE);
+    T_STREQ(hud.save_menu.LoadGameCancelButton->OnClick, "menu");
+    T_STREQ(menu_action_capture, "");
+
+    G_ClientCommand(player, 1, (cstring_t[]){ "menu" }); /* Cancel */
+    T_ASSERT(hud.menu.ReturnButton->disabled);
+    T_ASSERT(menu_window_flags & UI_WINDOW_NO_ESCAPE);
+    G_ClientCommand(player, 1, (cstring_t[]){ "menu_endgame" });
+    T_ASSERT(menu_window_flags & UI_WINDOW_NO_ESCAPE);
+    G_ClientCommand(player, 1, (cstring_t[]){ "menu" }); /* Previous */
+    T_ASSERT(hud.menu.ReturnButton->disabled);
+    T_ASSERT(menu_window_flags & UI_WINDOW_NO_ESCAPE);
+    G_ClientCommand(player, 1, (cstring_t[]){ "wc3_menu_options" });
+    T_ASSERT(menu_window_flags & UI_WINDOW_NO_ESCAPE);
+    T_EQ(menu_window_opens, 5u);
+
+    gi.Write = old_write;
+    gi.unicast = old_unicast;
+    gi.MenuAction = old_action;
+    UI_ResetHud();
+}
+
+TEST(wc3_game, ingame_quick_load_cancel_keeps_return_to_game) {
+    __typeof__(gi.Write) old_write = gi.Write;
+    __typeof__(gi.unicast) old_unicast = gi.unicast;
+    __typeof__(gi.MenuAction) old_action = gi.MenuAction;
+    edict_t *player = menu_test_setup();
+
+    gi.Write = menu_window_test_write;
+    gi.unicast = options_window_test_unicast;
+    gi.MenuAction = menu_test_action;
+
+    G_ClientCommand(player, 1, (cstring_t[]){ "menu_load_quick" });
+    T_EQ(menu_window_opens, 1u);
+    T_ASSERT(!(menu_window_flags & UI_WINDOW_NO_ESCAPE));
+    T_STREQ(hud.save_menu.LoadGameCancelButton->OnClick, "menu");
+    G_ClientCommand(player, 1, (cstring_t[]){ "menu" }); /* Cancel */
+    T_ASSERT(!hud.menu.ReturnButton->disabled);
+    T_ASSERT(!(menu_window_flags & UI_WINDOW_NO_ESCAPE));
+    T_STREQ(menu_action_capture, "");
+
+    gi.Write = old_write;
+    gi.unicast = old_unicast;
+    gi.MenuAction = old_action;
+    UI_ResetHud();
+}
+
+TEST(wc3_game, result_load_without_ingame_panel_opens_front_end_load_screen) {
+    __typeof__(gi.Write) old_write = gi.Write;
+    __typeof__(gi.unicast) old_unicast = gi.unicast;
+    __typeof__(gi.MenuAction) old_action = gi.MenuAction;
+    edict_t *player = menu_test_setup();
+
+    gi.Write = menu_window_test_write;
+    gi.unicast = options_window_test_unicast;
+    gi.MenuAction = menu_test_action;
+    hud.save_menu.EscMenuSaveGamePanel = NULL;
+
+    G_ClientCommand(player, 1, (cstring_t[]){ "gameresult_load" });
+    T_EQ(menu_window_opens, 0u);
+    T_STREQ(menu_action_capture, "menu menu_loadgame");
+
+    gi.Write = old_write;
+    gi.unicast = old_unicast;
+    gi.MenuAction = old_action;
+    UI_ResetHud();
+}
+
 TEST(wc3_game, hud_status_icon_keys_follow_upgrade_and_neutral_families) {
     char key[96];
 
