@@ -6,8 +6,7 @@ void reset_entities(void);
 void setup_test_world(void);
 slkTestData_t *parse_slk_string(char const *slk_text);
 void free_slk_rows(slkTestData_t *rows);
-static int save_test_model_index;
-static char save_test_model_path[MAX_PATHLEN];
+static char save_test_model_paths[4][MAX_PATHLEN];
 #endif
 
 typedef enum {
@@ -2047,13 +2046,6 @@ static bool ReadEdict(FILE *f, edict_t *ent) {
     /* Table rows are process-owned; C callbacks already came back through F_CFUNCTION. */
     if (ent->class_id) {
         G_BindEntityData(ent);
-        /* Model indices belong to the freshly rebuilt map configstring table.
-         * Re-register ordinary units by their stable object-data model path. */
-        if ((ent->s.flags & EF_UNIT) && !ent->polymorph && ent->data.UnitUI->modelFile) {
-            PATHSTR model_filename;
-            G_NormalizeModelFilename(ent->data.UnitUI->modelFile, model_filename, sizeof(model_filename));
-            ent->s.model = G_RegisterModel(model_filename);
-        }
         /* animation is a process-owned model pointer and is deliberately not serialized.
          * Re-resolve it from the persisted logical request plus per-unit animation tags. */
         if (ent->animation_request[0])
@@ -2246,6 +2238,29 @@ done:
     return ok;
 }
 
+/* Model indices belong to the freshly rebuilt map configstring table. Re-register every
+ * persisted index from the entity's stable object-data model paths. Runs after the pools
+ * are back so a live polymorph keeps its morph form and restores its own model on expiry. */
+static void RebindEntityModels(edict_t *ent) {
+    PATHSTR model_filename;
+    if (!(ent->s.flags & EF_UNIT)) {
+        if (ent->data.ItemData->file) ent->s.model = G_RegisterModel(ent->data.ItemData->file);
+        return;
+    }
+    if (ent->data.UnitUI->modelFile) {
+        G_NormalizeModelFilename(ent->data.UnitUI->modelFile, model_filename, sizeof(model_filename));
+        if (ent->polymorph) {
+            ent->polymorph->original_model = G_RegisterModel(model_filename);
+            G_NormalizeModelFilename(G_UnitUI(ent->polymorph->form_type)->modelFile, model_filename, sizeof(model_filename));
+        }
+        ent->s.model = G_RegisterModel(model_filename);
+    }
+    if (ent->attack1.weapon == WPN_MISSILE || ent->attack1.weapon == WPN_ARTILLERY)
+        ent->attack1.projectile.model = G_RegisterModel(ent->data.UnitProfile->attack[0].art);
+    if (ent->attack2.weapon == WPN_MISSILE || ent->attack2.weapon == WPN_ARTILLERY)
+        ent->attack2.projectile.model = G_RegisterModel(ent->data.UnitProfile->attack[1].art);
+}
+
 bool ReadGame(cstring_t filename) {
     FILE *f = fopen(filename, "rb");
     if (f) setvbuf(f, NULL, _IOFBF, SAVE_STREAM_BUFFER);
@@ -2382,6 +2397,7 @@ bool ReadGame(cstring_t filename) {
     FOR_LOOP(i, globals.num_edicts) {
         edict_t *ent = g_edicts + i;
         if (!ent->inuse) continue;
+        if (ent->class_id) RebindEntityModels(ent);
         if (ent->destructable) G_RestoreDestructableData(ent);
         if (gi.LinkEntity) gi.LinkEntity(ent);
     }
@@ -2478,36 +2494,119 @@ TEST(wc3_save, active_quest_count_may_differ_before_restore) {
     remove(filename);
 }
 
-static int save_test_model_index_fn(cstring_t filename) {
-    strlcpy(save_test_model_path, filename, sizeof(save_test_model_path));
-    return save_test_model_index;
+/* Deterministic stand-in for gi.ModelIndex: each distinct path gets 91 + its first-seen slot,
+ * so a test can prove which authored path a restored index was registered from. */
+static int save_test_model_index(cstring_t filename, bool insert) {
+    if (!filename) return 0;
+    FOR_LOOP(i, 4) {
+        if (!save_test_model_paths[i][0]) { if (!insert) return 0; strlcpy(save_test_model_paths[i], filename, MAX_PATHLEN); }
+        if (!strcmp(save_test_model_paths[i], filename)) return 91 + (int)i;
+    }
+    return 0;
+}
+
+static int save_test_model_index_fn(cstring_t filename) { return save_test_model_index(filename, true); }
+
+static bool save_test_read_with_model_stub(cstring_t filename) {
+    int (*old_model_index)(cstring_t) = gi.ModelIndex;
+    bool loaded;
+    memset(save_test_model_paths, 0, sizeof(save_test_model_paths));
+    gi.ModelIndex = save_test_model_index_fn;
+    loaded = ReadGame(filename);
+    gi.ModelIndex = old_model_index;
+    return loaded;
 }
 
 TEST(wc3_save, ordinary_unit_model_is_reregistered_after_load) {
     cstring_t const filename = Test_TempPath("wc3-save-unit-model.bin");
-    int (*old_model_index)(cstring_t) = gi.ModelIndex;
-    uint32_t unit_index;
+    PATHSTR model_filename;
     edict_t *unit;
-    bool loaded;
 
     reset_entities();
     setup_test_world();
     unit = alloc_test_unit(MAKEFOURCC('h', 'f', 'o', 'o'), 0.0f, 0.0f);
     T_ASSERT(unit->data.UnitUI && unit->data.UnitUI->modelFile);
     if (!unit->data.UnitUI || !unit->data.UnitUI->modelFile) return;
-    unit_index = (uint32_t)(unit - g_edicts);
     unit->s.flags |= EF_UNIT;
     unit->s.model = 4;
     T_ASSERT(WriteGame(filename));
+    T_ASSERT(save_test_read_with_model_stub(filename));
+    G_NormalizeModelFilename(unit->data.UnitUI->modelFile, model_filename, sizeof(model_filename));
+    T_ASSERT(save_test_model_index(model_filename, false) > 0);
+    T_EQ(unit->s.model, save_test_model_index(model_filename, false));
+    remove(filename);
+}
 
-    save_test_model_index = 91;
-    save_test_model_path[0] = '\0';
-    gi.ModelIndex = save_test_model_index_fn;
-    loaded = ReadGame(filename);
-    gi.ModelIndex = old_model_index;
-    T_ASSERT(loaded);
-    T_EQ(g_edicts[unit_index].s.model, save_test_model_index);
-    T_ASSERT(save_test_model_path[0]);
+TEST(wc3_save, item_model_is_reregistered_after_load) {
+    cstring_t const filename = Test_TempPath("wc3-save-item-model.bin");
+    edict_t *item;
+
+    reset_entities();
+    setup_test_world();
+    item = alloc_test_unit(MAKEFOURCC('r', 'a', 't', 'f'), 32.0f, 64.0f);
+    SP_SpawnItem(item);
+    T_ASSERT(item->data.ItemData->file && item->s.model);
+    item->s.model = 4;
+    T_ASSERT(WriteGame(filename));
+    T_ASSERT(save_test_read_with_model_stub(filename));
+    T_ASSERT(save_test_model_index(item->data.ItemData->file, false) > 0);
+    T_EQ(item->s.model, save_test_model_index(item->data.ItemData->file, false));
+    remove(filename);
+}
+
+TEST(wc3_save, polymorphed_unit_rebinds_form_and_original_models_after_load) {
+    static char const ui_slk[] =
+        "C;Y1;X1;K\"unitUIID\"\nC;Y1;X2;K\"file\"\n"
+        "C;Y2;X1;K\"hfoo\"\nC;Y2;X2;K\"TestUI\\\\Models\\\\footman.mdx\"\n"
+        "C;Y3;X1;K\"opeo\"\nC;Y3;X2;K\"TestUI\\\\Models\\\\sheep.mdx\"\nE\n";
+    cstring_t const filename = Test_TempPath("wc3-save-polymorph-model.bin");
+    slkTestData_t *rows = parse_slk_string(ui_slk), *old;
+    PATHSTR original, form;
+    edict_t *unit;
+
+    reset_entities();
+    setup_test_world();
+    old = G_SetSLKRows("UnitUI", rows);
+    unit = alloc_test_unit(MAKEFOURCC('h', 'f', 'o', 'o'), 0.0f, 0.0f);
+    unit->s.flags |= EF_UNIT;
+    unit->polymorph = G_AllocPolymorph();
+    unit->polymorph->form_type = MAKEFOURCC('o', 'p', 'e', 'o');
+    unit->polymorph->original_model = 4;
+    unit->s.model = 5;
+    T_ASSERT(WriteGame(filename));
+    T_ASSERT(save_test_read_with_model_stub(filename));
+    G_NormalizeModelFilename(G_UnitUI(unit->class_id)->modelFile, original, sizeof(original));
+    G_NormalizeModelFilename(G_UnitUI(MAKEFOURCC('o', 'p', 'e', 'o'))->modelFile, form, sizeof(form));
+    T_ASSERT(original[0] && form[0] && strcmp(original, form));
+    T_ASSERT(save_test_model_index(original, false) > 0 && save_test_model_index(form, false) > 0);
+    T_NOT_NULL(unit->polymorph);
+    if (unit->polymorph) T_EQ(unit->polymorph->original_model, save_test_model_index(original, false));
+    T_EQ(unit->s.model, save_test_model_index(form, false));
+    G_SetSLKRows("UnitUI", old); free_slk_rows(rows);
+    remove(filename);
+}
+
+TEST(wc3_save, missile_attack_projectile_models_are_reregistered_after_load) {
+    static char const profile_slk[] =
+        "C;Y1;X1;K\"id\"\nC;Y1;X2;K\"Missileart\"\n"
+        "C;Y2;X1;K\"hfoo\"\nC;Y2;X2;K\"TestUI\\\\Missiles\\\\arrow.mdx\"\nE\n";
+    cstring_t const filename = Test_TempPath("wc3-save-projectile-model.bin");
+    slkTestData_t *rows = parse_slk_string(profile_slk), *old = G_SetProfileRows(rows);
+    edict_t *unit;
+
+    reset_entities();
+    setup_test_world();
+    unit = alloc_test_unit(MAKEFOURCC('h', 'f', 'o', 'o'), 0.0f, 0.0f);
+    unit->s.flags |= EF_UNIT;
+    unit->attack1.weapon = WPN_MISSILE; unit->attack1.projectile.model = 6;
+    unit->attack2.weapon = WPN_ARTILLERY; unit->attack2.projectile.model = 7;
+    T_ASSERT(WriteGame(filename));
+    T_ASSERT(save_test_read_with_model_stub(filename));
+    T_ASSERT(save_test_model_index(unit->data.UnitProfile->attack[0].art, false) > 0);
+    T_ASSERT(save_test_model_index(unit->data.UnitProfile->attack[1].art, false) > 0);
+    T_EQ(unit->attack1.projectile.model, save_test_model_index(unit->data.UnitProfile->attack[0].art, false));
+    T_EQ(unit->attack2.projectile.model, save_test_model_index(unit->data.UnitProfile->attack[1].art, false));
+    G_SetProfileRows(old); free_slk_rows(rows);
     remove(filename);
 }
 

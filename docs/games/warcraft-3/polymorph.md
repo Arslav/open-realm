@@ -61,7 +61,7 @@ Death retires the active restore contract so an expired timer cannot revive or r
 
 ## Save/load
 
-Save format 18 serializes the Polymorph restoration record (`ability`, `buff`, selected form type, original model/scale/movement speed, and active state). The timed buff itself already round-trips in `abilstatus[]`, so a loaded active Polymorph retains both its remaining duration and the state required to restore the original presentation.
+Save format 18 serializes the Polymorph restoration record (`ability`, `buff`, selected form type, original model/scale/movement speed, and active state). The timed buff itself already round-trips in `abilstatus[]`, so a loaded active Polymorph retains both its remaining duration and the state required to restore the original presentation. `original_model` and the morphed `s.model` are map configstring indexes, so load re-registers both from the unit's and the form's `UnitUI.modelFile` (see [save-load](save-load.md)).
 
 ## Known boundaries
 
