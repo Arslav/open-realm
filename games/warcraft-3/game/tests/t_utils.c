@@ -102,6 +102,9 @@ static war3mapVertex_t test_vertices[(TEST_PATHMAP_CELLS + 1) * (TEST_PATHMAP_CE
 
 static uint32_t test_get_time(void) { return level.time; }
 static void test_set_paused(bool paused) { (void)paused; }
+/* Parallel shards share the per-user saves directory; game-module save slots
+ * (hero_saveload_audit, JASS SaveGame) must stay private to this process. */
+static void test_save_path(cstring_t rel, string_t out, uint32_t out_size) { strlcpy(out, Test_TempPath(rel), out_size); }
 
 /* Pathmap tests need an explicit world-space transform; production maps normally provide it via war3map.w3e. */
 void setup_test_pathmap(uint32_t width, uint32_t height, uint8_t const *cells) {
@@ -192,6 +195,7 @@ static void reset_test_state(void) {
     G_InitPlayerAlliances(level.mapinfo);
     gi.GetTime = test_get_time;
     gi.SetPaused = test_set_paused;
+    gi.SavePath = test_save_path;
     CM_SetupTestWorldBounds(&MAKE(box2_t, .min = {0, 0}, .max = {512, 384}));
     gi.ClearWorld();
 }

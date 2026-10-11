@@ -292,7 +292,12 @@ steps until origin changes while `currentmove` is still `walk`, then
 `WriteGame`/`ReadGame` and checks origin, `heroabilities[]`, `abilities.added[]`,
 inventory class/charges, and that one more walk think still advances.
 `wc3_save.hero_audit_*` drives `G_HeroSaveLoadAuditFrame` for hidden-first-Hero,
-paused/cinematic wait, and dest-snap retries.
+paused/cinematic wait, and dest-snap retries. The audit saves through
+`gi.SavePath("hero-saveload-audit")`, a fixed slot name; the in-engine test
+fixture redirects `gi.SavePath` into the per-process `Test_TempPath` directory
+because parallel `make test` shards otherwise share one per-user `saves/` file
+and a sibling shard's `WriteGame` can land between this process's save and
+reload (the hidden-first-Hero test then restored the sibling's walking Hero).
 
 Campaign maps are a local diagnostic, not `make test`. Arm the production
 binary with `wc3_hero_saveload_audit=1`; after `G_LoadMap` the game module waits
