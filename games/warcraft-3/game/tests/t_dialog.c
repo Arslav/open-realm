@@ -553,4 +553,58 @@ TEST(wc3_dialog, load_restores_visible_dialog_once_on_client_begin) {
     T_EQ(G_JassDialog(level.dialogs)->visible_players, 1u);
     remove(filename);
 }
+
+static float dialog_root_height;
+static void dialog_test_capture_root(pfWriteType_t type, void const *data) {
+    uiFrame_t const *frame = data;
+    if (type == PF_UIWINDOWFRAME && frame->number == 1) dialog_root_height = frame->size.height;
+}
+
+static float dialog_test_show_height(cstring_t message) {
+    jassDialog_t *dialog = G_JassDialogCreate();
+    if (!dialog || !G_JassDialogAddButton(dialog, "Restart", NULL)) return -1.0f;
+    snprintf(dialog->message, sizeof(dialog->message), "%s", message);
+    dialog_root_height = 0.0f;
+    UI_JassDialogShow(g_edicts, dialog);
+    G_JassDialogDestroy(dialog);
+    return dialog_root_height;
+}
+
+TEST(wc3_dialog, long_message_grows_dialog_below_its_rows) {
+    void (*old_write)(pfWriteType_t, void const *) = gi.Write;
+    void (*old_unicast)(edict_t *) = gi.unicast;
+    int (*old_font)(cstring_t, uint32_t) = gi.FontIndex;
+    int (*old_image)(cstring_t) = gi.ImageIndex;
+    stbIniCache_t old_theme = game.config.theme, theme = { 0 };
+    cstring_t theme_text = "[Default]\nEscMenuBackground=DialogBackground.blp\nEscMenuBorder=DialogBorder.blp\n";
+    float short_height, tall_height;
+
+    setup_test_world();
+    UI_ClearTemplates();
+    game.clients[0].ps.number = 0;
+    game.clients[0].connected = true;
+    g_edicts[0].client = game.clients;
+    T_ASSERT(Stb_IniCacheLoadBuffer(&theme, theme_text));
+    game.config.theme = theme;
+    gi.Write = dialog_test_capture_root;
+    gi.unicast = dialog_test_unicast;
+    gi.FontIndex = dialog_test_font;
+    gi.ImageIndex = dialog_test_image;
+
+    short_height = dialog_test_show_height("Defeat");
+    tall_height = dialog_test_show_height("Defeat\n1\n2\n3\n4\n5\n6\n7");
+
+    /* ScriptDialog fixture: title TOP at -0.03, 0.013 title font, 0.031 rows, 0.112 minimum height. */
+    T_ASSERT(short_height > 0.0f);
+    T_ASSERT(short_height <= 0.112f + 0.0005f);
+    T_ASSERT(tall_height >= 0.03f + 8 * 0.013f + 0.016f + 0.031f + 0.012f - 0.0005f);
+
+    gi.Write = old_write;
+    gi.unicast = old_unicast;
+    gi.FontIndex = old_font;
+    gi.ImageIndex = old_image;
+    UI_ClearTemplates();
+    Stb_IniCacheFree(&game.config.theme);
+    game.config.theme = old_theme;
+}
 #endif

@@ -232,6 +232,15 @@ static void DialogStyleText(frameDef_t *frame) {
     if (!frame->Font.Color.a) frame->Font.Color = COLOR32_WHITE;
 }
 
+/* The client wraps and measures the message; bound its extent below the root
+ * top here so the generated rows anchored under it never leave the backdrop. */
+static float DialogMessageBottom(frameDef_t const *message, cstring_t text, float width) {
+    float size = message->Font.Size > 0.0f ? message->Font.Size : 0.015f;
+    uint32_t per_line = (uint32_t)MAX(1.0f, width / (0.5f * size)), lines = 1, column = 0;
+    for (; *text; text++) if (*text == '\n' || ++column > per_line) ++lines, column = 0;
+    return -message->Points.y[FPP_MIN].offset + MAX(message->Height, lines * size);
+}
+
 /* Supply race-skinned chrome and bounds for the dialog's backdrop. */
 static bool DialogApplyBackdrop(frameDef_t *root, frameDef_t *backdrop) {
     if (!root) return false;
@@ -264,7 +273,7 @@ void UI_JassDialogShow(edict_t *ent, jassDialog_t const *dialog) {
     ScriptDialog_t dialog_frames, clone_frames;
     ScriptDialogButton_t button_template, button_frames;
     bool stock_dialog, stock_button;
-    float content_height = 0.10f;
+    float content_height;
     uint32_t n = 0, omitted = 0;
     if (!ent || !ent->client || !dialog) return;
     DialogDebug("ui_show dialog=%u player=%u message=\"%s\"", dialog->id,
@@ -308,6 +317,10 @@ void UI_JassDialogShow(edict_t *ent, jassDialog_t const *dialog) {
     snprintf(message->Name, sizeof(message->Name), "JassChoiceMessage");
     DialogStyleText(message);
     UI_SetText(message, "%s", dialog->message);
+    /* The native fallback text has no authored anchor; give it the stock title position so rows can hang from it. */
+    if (!message->AnyPointsSet || !message->Points.y[FPP_MIN].used)
+        UI_SetPoint(message, FRAMEPOINT_TOP, root, FRAMEPOINT_TOP, 0, -0.03f);
+    content_height = DialogMessageBottom(message, dialog->message, root->Width) + 0.016f;
     FOR_LOOP(i, level.dialog_button_count) {
         jassDialogButton_t const *entry = &level.dialog_buttons[i];
         frameDef_t *button, *text;
