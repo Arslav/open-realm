@@ -13,14 +13,24 @@ lethal-hit camp assistance, wake-up and construction-start provocation.
 The phase belongs to the server simulation and is persisted in the save.
 
 `[Misc] GuardDistance` (600 fallback), `MaxGuardDistance` (1000 fallback),
-and `GuardReturnTime` (5 seconds fallback) control leash policy.
+and `GuardReturnTime` (5 seconds fallback) control leash policy. They are read
+once per map into `game.constants` (`guardDistance`, `maxGuardDistance`,
+`guardReturnMs`) by `InitConstants`, never per creep tick.
 Positive damage refreshes the no-hit timer. Outside the hard range, or outside
 soft range after the timeout, an automatically fighting creep attempts a Move
 back to its original anchor. Stopped moves retry on a simulation-time one-second
-backoff, no more than three actual attempts. Root, stun, pause, Cyclone and
+backoff, no more than three actual attempts; the terminal blocked hold counts
+as a stopped Move. Root, stun, pause, Cyclone and
 other immobilizing conditions delay attempts without consuming that budget.
 No teleportation occurs. If the target is lost and automatic combat becomes
 idle, the unit can enter return policy even without an attack-end callback.
+
+A returning creep ignores enemies: `ai_stand` skips acquisition, `T_Damage`
+skips retaliation, and camp alerts skip it. Home is the Move's own near-goal
+band (`move_settle_distance`: one step plus collision plus the slot margin), so
+a creep parked beside an anchor another camp member occupies has arrived. Any
+Attack that still reaches a returning creep (Taunt, bot AI) is leashed combat,
+not a failed return attempt.
 
 The generic `A_ORDER_ACCEPTED` ability notification does not cancel guard state;
 it is also used by internal abilities. Explicit accepted target/point orders
@@ -66,9 +76,11 @@ before committing, per `CONTRIBUTING.md`.
 
 ## Explicit orders and ownership transitions
 
-Accepted immediate Stop/Hold Position and active no-target abilities, accepted
-queued point moves, and direct UI Move clear autonomous creep-guard ownership.
-Internal ability-order notifications do not. Ownership changes into Neutral
+Accepted immediate Stop/Hold Position and active no-target abilities and
+direct UI Move clear autonomous creep-guard ownership. A Shift-queued order
+clears it only when it starts, so the running auto-acquired attack stays
+leashed; when the leash fires with an order queued, the creep starts that order
+instead of walking home. Internal ability-order notifications do not clear it. Ownership changes into Neutral
 Hostile initialize a new guard anchor at the conversion location; transfers
 out disable the policy. Neither path changes the independent Stop anchor.
 

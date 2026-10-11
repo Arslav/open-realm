@@ -1498,6 +1498,13 @@ static float move_group_speed(edict_t *const *units, uint32_t count) {
     return slowest;
 }
 
+/* Near-goal band where a Move settles when its exact goal is occupied; creep
+ * guard arrival uses the same rule so a creep parked beside a filled anchor
+ * counts as home. */
+float move_settle_distance(edict_t *ent) {
+    return unit_movedistance(ent) + ent->collision + MOVE_SLOT_MARGIN;
+}
+
 bool move_should_arrive(edict_t *ent, float move_distance) {
     vec2_t to_goal = Vector2_sub(&ent->goalentity->s.origin2, &ent->s.origin2);
     float distance = Vector2_len(&to_goal);

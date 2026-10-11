@@ -1012,10 +1012,7 @@ bool G_IssueUnitTargetOrder(edict_t *self, cstring_t order, edict_t *target,
     if (queue && G_UnitHasActiveOrder(self)) {
         bool const accepted = G_QueueUnitOrder(self, order, UNIT_ORDER_TARGET_ENTITY, NULL, target,
                                                issuer_player, 0.0f, 0);
-        if (accepted) {
-            G_CreepGuardExplicitOrder(self);
-            unit_publish_target_order(self, order, target, issuer_player);
-        }
+        if (accepted) unit_publish_target_order(self, order, target, issuer_player);
         return accepted;
     }
     if (!queue) G_ClearUnitOrderQueue(self);
@@ -1070,11 +1067,9 @@ bool G_IssueUnitPointOrder(edict_t *self, cstring_t order, vec2_t const *point,
     if (queue && G_UnitHasActiveOrder(self)) {
         bool const accepted = G_QueueUnitOrder(self, order, UNIT_ORDER_TARGET_POINT, point, NULL,
                                                issuer_player, group_speed, 0);
-        if (accepted) {
-            G_CreepGuardExplicitOrder(self);
+        if (accepted)
             G_PublishIssuedPointOrder(self, unit_order_event_id(order), point,
                                       issuer_player, order);
-        }
         return accepted;
     }
     if (!queue) G_ClearUnitOrderQueue(self);
@@ -1090,7 +1085,7 @@ bool G_IssueUnitPointOrder(edict_t *self, cstring_t order, vec2_t const *point,
     }
 }
 
-bool G_UnitStartNextQueuedOrder(edict_t *self) {
+static bool unit_start_next_queued_order(edict_t *self) {
     unitOrder_t queued;
 
     if (!self || M_IsDead(self) || !S_AncientCanReceiveOrder(self)) return false;
@@ -1121,6 +1116,14 @@ bool G_UnitStartNextQueuedOrder(edict_t *self) {
         } else if (S_UnitQueuedOrderEvent(self, &queued, A_QUEUE_ORDER_START)) return true;
     }
     return false;
+}
+
+/* A queued order takes creep-guard ownership when it starts, not when it is
+ * accepted: until then the running auto-acquired attack stays leashed. */
+bool G_UnitStartNextQueuedOrder(edict_t *self) {
+    bool const started = unit_start_next_queued_order(self);
+    if (started) G_CreepGuardExplicitOrder(self);
+    return started;
 }
 
 bool unit_issuetargetorder(edict_t *self, cstring_t order, edict_t *target) {

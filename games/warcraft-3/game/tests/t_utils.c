@@ -165,6 +165,9 @@ static void reset_test_state(void) {
     game.constants.gameDayHours = 24.0f;
     game.constants.gameDayLength = 480.0f;
     game.constants.foodCeiling = 100;
+    game.constants.guardDistance = 600.0f;
+    game.constants.maxGuardDistance = 1000.0f;
+    game.constants.guardReturnMs = 5000;
     game.constants.upkeepUsageCount = 2;
     game.constants.upkeepGoldTaxCount = 3;
     game.constants.upkeepLumberTaxCount = 3;

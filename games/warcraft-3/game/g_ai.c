@@ -249,6 +249,9 @@ void ai_stand(edict_t *self) {
         return;
     if (S_UnitAbilityEvent(self, A_IDLE))
         return;
+    /* Retail returning creeps ignore enemies until they are home. */
+    if (self->movement.creep_guard_phase == CREEP_GUARD_RETURNING)
+        return;
     /* Neutral creeps sleep until an enemy enters acquisition range, then wake
      * permanently and fight normally.  Campaign defenders that were made hostile
      * by script have already had AI_SLEEPING cleared and use regular acquisition. */
@@ -319,8 +322,8 @@ void G_CreepGuardInit(edict_t *unit) {
 }
 
 /* Script controls the auto-guard policy, never the player's Stop anchor.
- * Existing explicit orders remain in place. Re-enabling uses the current
- * position as the anchor only if this unit never had a creep anchor. */
+ * Existing explicit orders remain in place. Re-enabling keeps the creep's
+ * original anchor; only G_CreepGuardInit (spawn, ownership change) sets it. */
 void G_CreepGuardSetEnabled(edict_t *unit, bool enabled) {
     if (!unit) return;
     enabled = enabled && unit->s.player == PLAYER_NEUTRAL_AGGRESSIVE &&
@@ -453,7 +456,10 @@ void G_CreepGuardExplicitOrder(edict_t *unit) {
 
 static bool creep_guard_begin_return(edict_t *unit) {
     edict_t *point;
-    if ((unit->aiflags & AI_IMMOBILE) || G_UnitQueuedOrderCount(unit)) return false;
+    if (unit->aiflags & AI_IMMOBILE) return false;
+    /* A Shift-queued order outranks the walk home: the leash ends the
+     * automatic attack by starting that order, which clears guard ownership. */
+    if (G_UnitQueuedOrderCount(unit)) return G_UnitStartNextQueuedOrder(unit);
     unit->movement.creep_guard_outside_ms = 0;
     unit->movement.creep_guard_phase = CREEP_GUARD_RETURNING;
     unit->movement.creep_guard_return_retries = 0;
@@ -476,31 +482,42 @@ bool G_CreepGuardCombatEnd(edict_t *unit) {
     if (!unit || !unit->movement.creep_guard_enabled ||
         unit->movement.creep_guard_phase != CREEP_GUARD_COMBAT ||
         unit->s.player != PLAYER_NEUTRAL_AGGRESSIVE) return false;
-    if (Vector2_distance(&unit->s.origin2, &unit->movement.creep_guard_origin) <= 4.0f) {
-        if (unit->movement.creep_guard_phase == CREEP_GUARD_COMBAT) unit->movement.creep_guard_phase = CREEP_GUARD_IDLE;
+    if (Vector2_distance(&unit->s.origin2, &unit->movement.creep_guard_origin) <= move_settle_distance(unit)) {
+        unit->movement.creep_guard_phase = CREEP_GUARD_IDLE;
         return false;
     }
     return creep_guard_begin_return(unit);
 }
 
 void G_CreepGuardTick(edict_t *unit) {
-    float distance, soft, hard, seconds;
+    float distance;
     uint32_t now;
     if (!unit || !unit->inuse || !unit->movement.creep_guard_enabled ||
         unit->s.player != PLAYER_NEUTRAL_AGGRESSIVE || M_IsDead(unit)) return;
     distance = Vector2_distance(&unit->s.origin2, &unit->movement.creep_guard_origin);
+    /* Returning creeps never acquire, so a live Attack that still reaches one
+     * (Taunt, bot AI) is leashed combat, not a failed return Move whose
+     * exhausted retry budget would strand an unleashed fight. */
+    if (unit->movement.creep_guard_phase == CREEP_GUARD_RETURNING &&
+        unit->currentmove && unit->currentmove->proc == CAbilityAttack) {
+        G_CreepGuardExplicitOrder(unit);
+        G_CreepGuardAutoCombat(unit);
+    }
     if (unit->movement.creep_guard_phase == CREEP_GUARD_RETURNING) {
-        if (distance <= 4.0f) {
-            if (unit->movement.creep_guard_phase == CREEP_GUARD_RETURNING) unit->movement.creep_guard_phase = CREEP_GUARD_IDLE;
+        /* Home is the Move's own near-goal band: a creep parked beside an
+         * anchor another camp member occupies has arrived. */
+        if (distance <= move_settle_distance(unit)) {
+            unit->movement.creep_guard_phase = CREEP_GUARD_IDLE;
             unit->movement.creep_guard_outside_ms = 0;
             unit->movement.creep_guard_return_retries = 0;
             unit->movement.creep_guard_retry_at_ms = 0;
             return;
         }
-        /* Retry only when the return Move has stopped. A blocked or rooted
-         * unit cannot consume infinite waypoints each frame. */
+        /* Retry only when the return Move has stopped (idle stand or the
+         * terminal blocked hold). A blocked or rooted unit cannot consume
+         * infinite waypoints each frame. */
         if (unit->currentmove && unit->currentmove->proc == CAbilityMove &&
-            unit->currentmove->think != ai_stand)
+            unit->currentmove->think != ai_stand && !move_is_terminal_hold(unit))
             return;
         if (unit->movement.creep_guard_return_retries >= CREEP_GUARD_RETURN_RETRIES) {
             if (unit->movement.creep_guard_phase == CREEP_GUARD_RETURNING) unit->movement.creep_guard_phase = CREEP_GUARD_IDLE;
@@ -536,24 +553,15 @@ void G_CreepGuardTick(edict_t *unit) {
         return;
     }
     if (unit->currentmove->proc != CAbilityAttack) return;
-    soft = creep_guard_misc("GuardDistance", 600.0f);
-    hard = creep_guard_misc("MaxGuardDistance", 1000.0f);
-    if (hard < soft) hard = soft;
-    seconds = creep_guard_misc("GuardReturnTime", 5.0f);
-    /* The map value is in seconds but the simulation clock uses uint32
-     * milliseconds. Clamp before conversion to avoid undefined float-to-int
-     * overflow on malformed or extreme custom-map Misc values. */
-    if (seconds > (float)(UINT32_MAX / 1000u))
-        seconds = (float)(UINT32_MAX / 1000u);
     now = level.time;
-    if (distance <= soft) {
+    if (distance <= game.constants.guardDistance) {
         unit->movement.creep_guard_outside_ms = 0;
         return;
     }
     if (!unit->movement.creep_guard_outside_ms)
         unit->movement.creep_guard_outside_ms = now ? now : 1;
-    if (distance > hard ||
-        (now - unit->movement.creep_guard_outside_ms >= (uint32_t)(seconds * 1000.0f) &&
-         now - unit->movement.creep_guard_last_hit_ms >= (uint32_t)(seconds * 1000.0f)))
+    if (distance > game.constants.maxGuardDistance ||
+        (now - unit->movement.creep_guard_outside_ms >= game.constants.guardReturnMs &&
+         now - unit->movement.creep_guard_last_hit_ms >= game.constants.guardReturnMs))
         creep_guard_begin_return(unit);
 }

@@ -4,6 +4,8 @@
 
 edict_t *alloc_test_unit(uint32_t class_id, float x, float y);
 void setup_test_world(void);
+void reset_entities(void);
+bool run_test_jass(cstring_t src);
 void order_attack(edict_t *self, edict_t *target);
 void T_Damage(edict_t *target, edict_t *attacker, int damage);
 void G_RunEntities(void);
@@ -40,8 +42,8 @@ static void lifecycle_capture_command_frame(pfWriteType_t type, void const *valu
 }
 
 /* Keep production order, acquisition, and death entry points active in this review fixture. */
-static edict_t *review_order_unit(float x, uint32_t owner) {
-    edict_t *ent = alloc_test_unit(MAKEFOURCC('h','f','o','o'), x, 0);
+static edict_t *review_order_unit_at(float x, float y, uint32_t owner) {
+    edict_t *ent = alloc_test_unit(MAKEFOURCC('h','f','o','o'), x, y);
     ((mapInfo_t *)level.mapinfo)->players[owner].playerType = kPlayerTypeHuman;
     ent->s.player = owner;
     ent->svflags |= SVF_MONSTER;
@@ -60,6 +62,8 @@ static edict_t *review_order_unit(float x, uint32_t owner) {
     gi.LinkEntity(ent);
     return ent;
 }
+
+static edict_t *review_order_unit(float x, uint32_t owner) { return review_order_unit_at(x, 0, owner); }
 
 TEST(wc3_order_lifecycle, hold_position_does_not_chase_acquired_enemy) {
     setup_test_world();
@@ -758,6 +762,195 @@ TEST(wc3_order_lifecycle, creep_guard_owner_transfer_reconciles_policy) {
     T_ASSERT(creep->movement.creep_guard_enabled);
     T_EQ(creep->movement.creep_guard_phase, CREEP_GUARD_IDLE);
     T_FEQ(creep->movement.creep_guard_origin.x, 320, 0.01f);
+}
+
+/* Creep guard scheduler fixtures: a map script so globals.RunFrame pumps the
+ * real server frame, and creeps the scheduler drives itself. */
+static void creep_guard_setup_frame_world(void) {
+    reset_entities();
+    setup_test_world();
+    level.time = 1000;
+    T_ASSERT(run_test_jass("function main takes nothing returns nothing\nendfunction\n"));
+}
+
+static void creep_guard_run_frames(uint32_t frames) {
+    bool const started = level.started, scripts = level.scriptsStarted;
+    level.started = level.scriptsStarted = true;
+    FOR_LOOP(i, frames) { level.time += FRAMETIME; globals.RunFrame(); }
+    level.started = started; level.scriptsStarted = scripts;
+}
+
+/* Anchor the creep at (anchor_x, 0), then teleport it to (x, y) so the leash sees distance. */
+static edict_t *scheduled_creep(float anchor_x, float x, float y) {
+    edict_t *creep = review_order_unit(anchor_x, PLAYER_NEUTRAL_AGGRESSIVE);
+    creep->think = monster_think;
+    creep->collision = 16.0f;
+    creep->s.model = 1; /* IS_HOLLOW() ignores model-less edicts for collision */
+    G_CreepGuardInit(creep);
+    creep->s.origin2 = (vec2_t){ x, y };
+    creep->s.origin.x = x;
+    creep->s.origin.y = y;
+    gi.LinkEntity(creep);
+    return creep;
+}
+
+static bool creep_guard_attacking(edict_t const *creep) {
+    return creep->currentmove && creep->currentmove->proc == CAbilityAttack;
+}
+
+static float creep_guard_home_distance(edict_t const *creep) {
+    return Vector2_distance(&creep->s.origin2, &creep->movement.creep_guard_origin);
+}
+
+/* Two creeps walk home to the same anchor. B snaps onto it first; A arrives
+ * within the Move's own tolerance but cannot snap onto the occupied cell. An
+ * enemy stands in acquisition range of that spot: a returning creep must not
+ * acquire it, and the near-anchor stop must count as home. */
+TEST(wc3_order_lifecycle, returning_creep_ignores_enemy_and_settles_beside_occupied_anchor) {
+    creep_guard_setup_frame_world();
+    edict_t *b = scheduled_creep(128, 400, 0);
+    edict_t *a = scheduled_creep(128, 900, 0);
+    edict_t *enemy = review_order_unit_at(160, 400, 0);
+    int frame;
+    b->attack1.cooldown = 0; /* B has no weapon, so it stays parked on the anchor */
+    G_CreepGuardAutoCombat(b);
+    T_ASSERT(G_CreepGuardCombatEnd(b));
+    G_CreepGuardAutoCombat(a);
+    T_ASSERT(G_CreepGuardCombatEnd(a));
+    T_EQ(a->movement.creep_guard_phase, CREEP_GUARD_RETURNING);
+    T_ASSERT(a->currentmove && a->currentmove->proc == CAbilityMove);
+    for (frame = 0; frame < 400 && a->movement.creep_guard_phase == CREEP_GUARD_RETURNING; frame++) {
+        creep_guard_run_frames(1);
+        if (a->movement.creep_guard_phase == CREEP_GUARD_RETURNING) T_ASSERT(!creep_guard_attacking(a));
+    }
+    T_EQ(a->movement.creep_guard_phase, CREEP_GUARD_IDLE);
+    T_EQ(b->movement.creep_guard_phase, CREEP_GUARD_IDLE);
+    T_FEQ(b->s.origin2.x, 128, 0.001f);
+    T_ASSERT(creep_guard_home_distance(a) > 4.0f);
+    T_ASSERT(creep_guard_home_distance(a) <= move_settle_distance(a));
+    T_ASSERT(!creep_guard_attacking(a));
+    T_EQ(a->movement.creep_guard_return_retries, 0u);
+    T_ASSERT(enemy->inuse);
+}
+
+/* An Ensnared returning creep stands in acquisition range of an enemy. Retail
+ * returning creeps ignore enemies; the root only delays the return, and once it
+ * expires the creep walks home and goes idle with no attack order. */
+TEST(wc3_order_lifecycle, rooted_returning_creep_ignores_enemy_then_walks_home) {
+    creep_guard_setup_frame_world();
+    edict_t *creep = scheduled_creep(-800, 100, 0);
+    edict_t *enemy = review_order_unit_at(100, 300, 0);
+    int frame;
+    G_CreepGuardAutoCombat(creep);
+    T_ASSERT(G_CreepGuardCombatEnd(creep));
+    T_EQ(creep->movement.creep_guard_phase, CREEP_GUARD_RETURNING);
+    T_ASSERT(unit_addtimedstatus(creep, "BEer", 1, 2.0f));
+    for (frame = 0; frame < 10; frame++) {
+        creep_guard_run_frames(1);
+        T_EQ(creep->movement.creep_guard_phase, CREEP_GUARD_RETURNING);
+        T_ASSERT(!creep_guard_attacking(creep));
+    }
+    T_ASSERT(creep->currentmove && creep->currentmove->think == ai_stand);
+    T_FEQ(creep->s.origin2.x, 100, 0.001f);
+    for (frame = 0; frame < 400 && creep->movement.creep_guard_phase == CREEP_GUARD_RETURNING; frame++) {
+        creep_guard_run_frames(1);
+        if (creep->movement.creep_guard_phase == CREEP_GUARD_RETURNING) T_ASSERT(!creep_guard_attacking(creep));
+    }
+    T_EQ(creep->movement.creep_guard_phase, CREEP_GUARD_IDLE);
+    T_ASSERT(creep_guard_home_distance(creep) <= move_settle_distance(creep));
+    T_ASSERT(!creep_guard_attacking(creep));
+    T_ASSERT(enemy->inuse);
+}
+
+/* A live Attack reaching a returning creep (Taunt, bot AI) is leashed combat,
+ * never a failed return Move whose exhausted budget strands an unleashed fight. */
+TEST(wc3_order_lifecycle, creep_guard_live_attack_while_returning_is_leashed) {
+    setup_test_world();
+    edict_t *creep = review_order_unit(-800, PLAYER_NEUTRAL_AGGRESSIVE);
+    edict_t *enemy = review_order_unit(330, 0);
+    G_CreepGuardInit(creep);
+    creep->s.origin2.x = creep->s.origin.x = 300;
+    gi.LinkEntity(creep);
+    creep->movement.creep_guard_phase = CREEP_GUARD_RETURNING;
+    creep->movement.creep_guard_return_retries = 3;
+    order_attack(creep, enemy);
+    T_ASSERT(creep_guard_attacking(creep));
+    level.time = 1000;
+    G_CreepGuardTick(creep);
+    T_EQ(creep->movement.creep_guard_phase, CREEP_GUARD_RETURNING);
+    T_ASSERT(creep->currentmove && creep->currentmove->proc == CAbilityMove);
+    T_EQ(creep->movement.creep_guard_return_retries, 0u);
+}
+
+/* Hard leash through the real scheduler: idle acquisition, then the tick turns
+ * the live Attack beyond MaxGuardDistance into a return Move that walks home. */
+TEST(wc3_order_lifecycle, creep_guard_hard_leash_returns_home_through_scheduler) {
+    creep_guard_setup_frame_world();
+    edict_t *creep = scheduled_creep(-800, 300, 0);
+    edict_t *enemy = review_order_unit(330, 0);
+    int frame;
+    for (frame = 0; frame < 4 && creep->movement.creep_guard_phase != CREEP_GUARD_COMBAT; frame++)
+        creep_guard_run_frames(1);
+    T_EQ(creep->movement.creep_guard_phase, CREEP_GUARD_COMBAT);
+    T_ASSERT(creep_guard_attacking(creep) && creep->goalentity == enemy);
+    creep_guard_run_frames(1);
+    T_EQ(creep->movement.creep_guard_phase, CREEP_GUARD_RETURNING);
+    T_ASSERT(creep->currentmove && creep->currentmove->proc == CAbilityMove);
+    for (frame = 0; frame < 400 && creep->movement.creep_guard_phase == CREEP_GUARD_RETURNING; frame++)
+        creep_guard_run_frames(1);
+    T_EQ(creep->movement.creep_guard_phase, CREEP_GUARD_IDLE);
+    T_ASSERT(creep_guard_home_distance(creep) <= move_settle_distance(creep));
+    T_ASSERT(!creep_guard_attacking(creep));
+}
+
+/* Soft leash through the real scheduler: between GuardDistance and
+ * MaxGuardDistance the creep keeps fighting until GuardReturnTime passes
+ * without a hit, then walks home. */
+TEST(wc3_order_lifecycle, creep_guard_soft_leash_times_out_through_scheduler) {
+    creep_guard_setup_frame_world();
+    edict_t *creep = scheduled_creep(-800, -100, 0);
+    edict_t *enemy = review_order_unit(-70, 0);
+    uint32_t combat_ms;
+    int frame;
+    for (frame = 0; frame < 4 && creep->movement.creep_guard_phase != CREEP_GUARD_COMBAT; frame++)
+        creep_guard_run_frames(1);
+    T_EQ(creep->movement.creep_guard_phase, CREEP_GUARD_COMBAT);
+    T_ASSERT(creep_guard_attacking(creep) && creep->goalentity == enemy);
+    combat_ms = level.time;
+    for (frame = 0; frame < 80 && creep->movement.creep_guard_phase == CREEP_GUARD_COMBAT; frame++)
+        creep_guard_run_frames(1);
+    T_EQ(creep->movement.creep_guard_phase, CREEP_GUARD_RETURNING);
+    T_ASSERT(level.time - combat_ms >= 5000u);
+    T_ASSERT(creep->currentmove && creep->currentmove->proc == CAbilityMove);
+    for (frame = 0; frame < 400 && creep->movement.creep_guard_phase == CREEP_GUARD_RETURNING; frame++)
+        creep_guard_run_frames(1);
+    T_EQ(creep->movement.creep_guard_phase, CREEP_GUARD_IDLE);
+    T_ASSERT(creep_guard_home_distance(creep) <= move_settle_distance(creep));
+}
+
+/* A Shift-queued order only takes ownership once it starts. Until then the
+ * auto-acquired Attack stays leashed, and the leash hands control to the
+ * queued order instead of walking home. */
+TEST(wc3_order_lifecycle, creep_guard_queued_order_defers_reset_and_takes_over_on_leash) {
+    setup_test_world();
+    edict_t *creep = review_order_unit(-800, PLAYER_NEUTRAL_AGGRESSIVE);
+    edict_t *enemy = review_order_unit(330, 0);
+    vec2_t const point = { 500, 0 };
+    G_CreepGuardInit(creep);
+    creep->s.origin2.x = creep->s.origin.x = 300;
+    gi.LinkEntity(creep);
+    order_attack(creep, enemy);
+    G_CreepGuardAutoCombat(creep);
+    T_ASSERT(G_IssueUnitPointOrder(creep, "move", &point, true, creep->s.player, 0.0f));
+    T_EQ(G_UnitQueuedOrderCount(creep), 1u);
+    T_EQ(creep->movement.creep_guard_phase, CREEP_GUARD_COMBAT);
+    T_ASSERT(creep_guard_attacking(creep));
+    level.time = 1000;
+    G_CreepGuardTick(creep);
+    T_EQ(creep->movement.creep_guard_phase, CREEP_GUARD_IDLE);
+    T_EQ(G_UnitQueuedOrderCount(creep), 0u);
+    T_ASSERT(creep->currentmove && creep->currentmove->proc == CAbilityMove);
+    T_ASSERT(creep->goalentity && creep->goalentity->s.origin2.x == point.x);
 }
 
 #endif

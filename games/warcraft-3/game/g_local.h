@@ -2066,6 +2066,10 @@ struct game_locals {
         /* Automatic attack alarms use stock MiscGame tuning; map Misc overrides win. */
         float attackNotifyDelay;
         float attackNotifyRange;
+        /* Neutral Hostile leash, read once per map instead of per creep tick. */
+        float guardDistance;
+        float maxGuardDistance;
+        uint32_t guardReturnMs;
         /* Combat constants are sourced from Units\MiscGame.txt (and
          * war3mapMisc.txt overrides) rather than baked into attack code. */
         float defenseArmor;
@@ -3694,6 +3698,7 @@ void possession_two_think(edict_t *);
 void lsh_think(edict_t *);
 bool move_selectlocation(edict_t *, vec2_t const *);
 bool move_should_arrive(edict_t *, float);
+float move_settle_distance(edict_t *);
 bool move_is_blocked(edict_t *, float, float);
 bool move_is_settled_near_goal(edict_t *, float, float);
 bool move_is_terminal_hold(edict_t const *);

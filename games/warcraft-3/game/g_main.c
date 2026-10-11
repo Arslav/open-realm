@@ -377,7 +377,7 @@ static void InitConstants(void) {
         { ATK_MAGIC,  "DamageBonusMagic"  },
         { ATK_HERO,   "DamageBonusHero"   },
     };
-    float food_ceiling, defend_deflection;
+    float food_ceiling, defend_deflection, guard_return_seconds;
     Stb_IniCacheLoadFiles(&game.config.misc, miscdata_files);
     InitMiscValue("AttackHalfAngle", &game.constants.attackHalfAngle);
     InitMiscValue("MaxCollisionRadius", &game.constants.maxCollisionRadius);
@@ -402,6 +402,14 @@ static void InitConstants(void) {
     /* Stock WC3 Units\MiscData.txt values. war3mapMisc.txt remains authoritative. */
     InitMiscValueDefault("AttackNotifyDelay", &game.constants.attackNotifyDelay, 30.0f);
     InitMiscValueDefault("AttackNotifyRange", &game.constants.attackNotifyRange, 1250.0f);
+    /* BZ_HARDCODED_DATA_FALLBACK: stock WC3 creep leash. Seconds become the
+     * uint32 simulation clock, so clamp malformed or extreme map values first. */
+    InitMiscValueDefault("GuardDistance", &game.constants.guardDistance, 600.0f);
+    InitMiscValueDefault("MaxGuardDistance", &game.constants.maxGuardDistance, 1000.0f);
+    InitMiscValueDefault("GuardReturnTime", &guard_return_seconds, 5.0f);
+    game.constants.guardDistance = MAX(0.0f, game.constants.guardDistance);
+    game.constants.maxGuardDistance = MAX(game.constants.guardDistance, game.constants.maxGuardDistance);
+    game.constants.guardReturnMs = (uint32_t)(MIN(MAX(guard_return_seconds, 0.0f), (float)(UINT32_MAX / 1000u)) * 1000.0f);
 
     memcpy(game.constants.damageBonus, default_damage_bonus, sizeof(default_damage_bonus));
     FOR_LOOP(i, sizeof(damage_rows) / sizeof(damage_rows[0])) {
