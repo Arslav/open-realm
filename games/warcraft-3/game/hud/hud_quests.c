@@ -15,6 +15,8 @@
 #define QUEST_LIST_WIDTH_REDUCTION 0.025f
 #define QUEST_TITLE_RAISE -0.005f
 
+static bool QuestIsListVisible(quest_t const *quest);
+
 static void QuestPrepareScrollableList(frameDef_t *container, cstring_t scrollbar_name) {
     frameDef_t *scrollbar;
     if (!container || !scrollbar_name) return;
@@ -39,16 +41,29 @@ static void QuestPrepareScrollableList(frameDef_t *container, cstring_t scrollba
         container->Height = hud.quest_row->Height * QUEST_VISIBLE_ROWS;
         container->Font.Size = hud.quest_row->Height / 1.33f;
     }
-    /* Leave a clear gap before the optional quest column. The row button is
-     * anchored to this container's trailing edge, so narrowing the viewport
-     * also shortens the button and moves its scrollbar left. */
-    if (container->Width > QUEST_LIST_WIDTH_REDUCTION)
-        container->Width -= QUEST_LIST_WIDTH_REDUCTION;
+    if (container == hud.quest.QuestMainContainer)
+        hud.quest_main_list_width = container->Width;
+    else if (container == hud.quest.QuestOptionalContainer)
+        hud.quest_optional_list_width = container->Width;
 }
 
-static void QuestUpdateScrollbar(frameDef_t *container, uint32_t rows) {
+static uint32_t QuestCountListRows(bool required) {
+    uint32_t rows = 0;
+    FOR_EACH_QUEST(quest) {
+        if (QuestIsListVisible(quest) && quest->required == required) rows++;
+    }
+    return rows;
+}
+
+static void QuestUpdateListLayout(frameDef_t *container, bool required, uint32_t rows) {
     frameDef_t *scrollbar;
+    float width;
     if (!container) return;
+
+    width = required ? hud.quest_main_list_width : hud.quest_optional_list_width;
+    if (rows > QUEST_VISIBLE_ROWS) width -= QUEST_LIST_WIDTH_REDUCTION;
+    if (width > 0.0f) container->Width = width;
+
     scrollbar = UI_FindFrameNear(container, container->ListBox.ScrollBar);
     if (scrollbar) UI_SetHidden(scrollbar, rows <= QUEST_VISIBLE_ROWS);
 }
@@ -178,9 +193,11 @@ static void HideUnusedRows(frameDef_t * *rows, uint32_t count, uint32_t used) {
 static void PopulateQuestList(frameDef_t *container, bool required, quest_t const *selected) {
     frameDef_t * *rows = required ? hud.required_rows : hud.optional_rows;
     uint32_t *row_count = required ? &hud.required_row_count : &hud.optional_row_count;
-    uint32_t row = 0;
+    uint32_t row = 0, total_rows;
 
     if (!container) return;
+    total_rows = QuestCountListRows(required);
+    QuestUpdateListLayout(container, required, total_rows);
     ResetRowsForParent(rows, row_count, container);
     for (uint32_t completed_pass = 0; completed_pass < 2; completed_pass++) {
       FOR_EACH_QUEST(quest) {
@@ -283,7 +300,6 @@ static void PopulateQuestList(frameDef_t *container, bool required, quest_t cons
       }
     }
     HideUnusedRows(rows, *row_count, row);
-    QuestUpdateScrollbar(container, row);
 }
 
 static void PopulateQuestItems(frameDef_t *container, quest_t const *quest) {
