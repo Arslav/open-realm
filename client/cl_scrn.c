@@ -613,7 +613,12 @@ static int SCR_LayoutListBoxMaxScroll(uiFrame_t const *frame) {
         frame->buffer.size < sizeof(uiListBox_t)) return 0;
     lb = frame->buffer.data;
     view = Rect_inset(SCR_LayoutRect(frame), lb->border);
-    if (frame->text && *frame->text) {
+    if (!strcmp(lb->fetchCommand, "FRAME_ROWS")) {
+        FOR_LOOP(i, SCR_NumFrames()) {
+            uiFrame_t const *child = SCR_Frame(i);
+            if (child && child->parent == frame->number && child->flags.type != FT_SCROLLBAR) count++;
+        }
+    } else if (frame->text && *frame->text) {
         count = 1;
         for (cstring_t p = frame->text; *p; p++) if (*p == '\n') count++;
     }
@@ -1382,7 +1387,7 @@ void SCR_LayoutDrawFrame(uiFrame_t const *frame) {
     rect_t const *screen = SCR_LayoutRect(frame);
     /* Model sprites and dynamic drawers legitimately have no authored size.
      * Only absent context bindings suppress drawing, just as they collapse layout. */
-    if (!SCR_LayoutContextFrameVisible(frame)) return;
+    if (!SCR_LayoutContextFrameVisible(frame) || !SCR_LayoutFrameRowsVisible(frame)) return;
     FOR_LOOP(j, sizeof(drawers)/sizeof(*drawers)) {
         if (drawers[j].type == frame->flags.type) {
             drawers[j].func(frame, screen);
@@ -1393,6 +1398,7 @@ void SCR_LayoutDrawFrame(uiFrame_t const *frame) {
 
 void SCR_LayoutUpdateFrame(uiFrame_t const *frame) {
     rect_t const *screen = SCR_LayoutRect(frame);
+    if (!SCR_LayoutFrameRowsVisible(frame)) return;
 
     /* Tooltip ownership is a generic frame contract, not a command-button
      * behavior. Resource-bar labels/icons and other passive HUD frames may
@@ -1571,7 +1577,7 @@ bool SCR_LayoutMouseEvent(layoutMouseEvent_t const *mouse_event) {
             uiFrame_t const *frame = SCR_Frame(i - 1);
             bool hit;
 
-            if (!frame) continue;
+            if (!frame || !SCR_LayoutFrameRowsVisible(frame)) continue;
             if (frame->flags.type == FT_MULTISELECT)
                 hit = SCR_LayoutMultiselectEntityAt(frame, &point) != 0;
             else

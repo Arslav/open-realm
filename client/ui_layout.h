@@ -41,6 +41,7 @@ void SCR_WindowSetCameraNamespace(uintptr_t window_namespace);
 bool SCR_WindowLayoutIsCurrent(handle_t layout);
 void SCR_LayoutDrawOverlay(handle_t layout);
 bool SCR_LayoutHitTest(int x, int y);
+bool SCR_LayoutFrameRowsVisible(uiFrame_t const *frame);
 bool SCR_LayoutModalActive(void);
 void SCR_LayoutClampSelectionRect(rect_t *rect);
 void SCR_DrawLayout(void);

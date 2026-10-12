@@ -9,6 +9,50 @@
 #include "hud_local.h"
 #include "hud_utils.h"
 
+#define QUEST_FRAME_ROWS_SCROLL "FRAME_ROWS"
+#define QUEST_VISIBLE_ROWS 3
+#define QUEST_SCROLLBAR_WIDTH 0.015f
+#define QUEST_LIST_WIDTH_REDUCTION 0.025f
+#define QUEST_TITLE_RAISE -0.005f
+
+static void QuestPrepareScrollableList(frameDef_t *container, cstring_t scrollbar_name) {
+    frameDef_t *scrollbar;
+    if (!container || !scrollbar_name) return;
+    container->Type = FT_LISTBOX;
+    container->ListBox.Border = 0.0f;
+    strlcpy(container->ListBox.FetchCommand, QUEST_FRAME_ROWS_SCROLL,
+            sizeof(container->ListBox.FetchCommand));
+    strlcpy(container->ListBox.ScrollBar, scrollbar_name,
+            sizeof(container->ListBox.ScrollBar));
+    scrollbar = UI_FindFrameNear(container, scrollbar_name);
+    if (!scrollbar) {
+        scrollbar = UI_Spawn(FT_SCROLLBAR, container);
+        if (!scrollbar) return;
+        strlcpy(scrollbar->Name, scrollbar_name, sizeof(scrollbar->Name));
+        scrollbar->Slider.MinValue = 0.0f;
+        scrollbar->Slider.MaxValue = 1.0f;
+        scrollbar->Width = QUEST_SCROLLBAR_WIDTH;
+        UI_SetPoint(scrollbar, FRAMEPOINT_TOPRIGHT, container, FRAMEPOINT_TOPRIGHT, 0.0f, 0.0f);
+        UI_SetPoint(scrollbar, FRAMEPOINT_BOTTOMRIGHT, container, FRAMEPOINT_BOTTOMRIGHT, 0.0f, 0.0f);
+    }
+    if (hud.quest_row && hud.quest_row->Height > 0.0f) {
+        container->Height = hud.quest_row->Height * QUEST_VISIBLE_ROWS;
+        container->Font.Size = hud.quest_row->Height / 1.33f;
+    }
+    /* Leave a clear gap before the optional quest column. The row button is
+     * anchored to this container's trailing edge, so narrowing the viewport
+     * also shortens the button and moves its scrollbar left. */
+    if (container->Width > QUEST_LIST_WIDTH_REDUCTION)
+        container->Width -= QUEST_LIST_WIDTH_REDUCTION;
+}
+
+static void QuestUpdateScrollbar(frameDef_t *container, uint32_t rows) {
+    frameDef_t *scrollbar;
+    if (!container) return;
+    scrollbar = UI_FindFrameNear(container, container->ListBox.ScrollBar);
+    if (scrollbar) UI_SetHidden(scrollbar, rows <= QUEST_VISIBLE_ROWS);
+}
+
 /* QuestDialog.fdf owns both repeated row schemas in addition to the dialog root. */
 void UI_LoadHudQuests(void) {
     if (hud.quest.QuestDialog) return;
@@ -16,6 +60,8 @@ void UI_LoadHudQuests(void) {
     UI_CenterFrame(hud.quest.QuestDialog);
     hud.quest_row = UI_FindFrame("QuestListItem");
     hud.quest_item = UI_FindFrame("QuestItemListItem");
+    QuestPrepareScrollableList(hud.quest.QuestMainContainer, "QuestMainScrollBar");
+    QuestPrepareScrollableList(hud.quest.QuestOptionalContainer, "QuestOptionalScrollBar");
     if (!hud.quest_row) BZ_FDF_REPORT_MISSING("QuestListItem");
     if (!hud.quest_item) BZ_FDF_REPORT_MISSING("QuestItemListItem");
 }
@@ -126,20 +172,25 @@ static void PopulateQuestList(frameDef_t *container, bool required, quest_t cons
 
     if (!container) return;
     ResetRowsForParent(rows, row_count, container);
-    FOR_EACH_QUEST(quest) {
+    for (uint32_t completed_pass = 0; completed_pass < 2; completed_pass++) {
+      FOR_EACH_QUEST(quest) {
         char text[256];
         char command[64];
         frameDef_t *row_frame, *button, *title, *icon_container;
+        frameDef_t *template_button, *template_title;
         frameDef_t *selected_highlight, *completed_highlight, *failed_highlight, *complete;
         cstring_t title_text, icon_path;
         uint32_t quest_index;
         bool authored_selection;
 
-        if (!QuestIsListVisible(quest) || quest->required != required) continue;
+        if (!QuestIsListVisible(quest) || quest->required != required ||
+            quest->completed != (completed_pass != 0)) continue;
 
         row_frame = QuestRowAt(rows, row_count, container, row, hud.quest_row);
         button = row_frame ? UI_FindChildFrame(row_frame, "QuestListItemButton") : NULL;
         title = row_frame ? UI_FindChildFrame(row_frame, "QuestListItemTitle") : NULL;
+        template_button = UI_FindChildFrame(hud.quest_row, "QuestListItemButton");
+        template_title = UI_FindChildFrame(hud.quest_row, "QuestListItemTitle");
         if (!row_frame) {
             fprintf(stderr, "WC3 HUD: failed to clone QuestListItem row %u\n", (unsigned)row);
             return;
@@ -176,6 +227,7 @@ static void PopulateQuestList(frameDef_t *container, bool required, quest_t cons
         UI_SetHidden(complete, !quest->completed || quest->failed);
         if (complete && quest->completed && !quest->failed)
             UI_SetText(complete, "(%s)", UI_GetString("QUESTCOMPLETED"));
+        if (complete) complete->Font.Color = MAKE(color32_t, 252, 210, 18, 255);
 
         quest_index = UI_QuestIndex(quest);
         title_text = quest->discovered ? UI_LevelStringSafe(quest->title) : UI_GetString("UNDISCOVERED_QUEST");
@@ -184,6 +236,18 @@ static void PopulateQuestList(frameDef_t *container, bool required, quest_t cons
         snprintf(command, sizeof(command), "quest %u", (unsigned)quest_index);
 
         UI_SetText(title, "%s", text);
+        if (template_title)
+            title->Font.Justification.Offset.y = template_title->Font.Justification.Offset.y + QUEST_TITLE_RAISE;
+        /* Reuse the actual disabled control backdrop used by the F10 Help
+         * button. Choosing it as the normal art preserves the button's click
+         * handling while giving completed quests the retail gray background. */
+        if (template_button) {
+            strlcpy(button->Control.Backdrop.Normal,
+                    quest->completed && !quest->failed && template_button->Control.Backdrop.Disabled[0]
+                        ? template_button->Control.Backdrop.Disabled
+                        : template_button->Control.Backdrop.Normal,
+                    sizeof(button->Control.Backdrop.Normal));
+        }
         if (icon_container && icon_container->Type == FT_BACKDROP) {
             icon_container->Backdrop.Background = icon_path && *icon_path
                 ? UI_LoadTexture(icon_path, false) : UI_LoadTexture("UndiscoveredQuestIcon", true);
@@ -203,11 +267,13 @@ static void PopulateQuestList(frameDef_t *container, bool required, quest_t cons
                         ? icon_container->Backdrop.Background : 0));
         }
         UI_SetOnClick(button, "%s", command);
-        title->Font.Color = quest->completed ? title->Font.DisabledColor :
+        title->Font.Color = quest->completed ? COLOR32_WHITE :
             (!authored_selection && quest == selected ? MAKE(color32_t, 252, 210, 18, 255) : COLOR32_WHITE);
         row++;
+      }
     }
     HideUnusedRows(rows, *row_count, row);
+    QuestUpdateScrollbar(container, row);
 }
 
 static void PopulateQuestItems(frameDef_t *container, quest_t const *quest) {

@@ -709,7 +709,12 @@ static int CL_WindowListMaxScroll(uiFrame_t const *frame) {
     /* Share the renderer's inset math so list hit-testing uses the exact same viewport. */
     view = Rect_inset(SCR_LayoutRect(frame), lb->border);
     item_height = lb->itemHeight > 0.0f ? lb->itemHeight : 0.018f;
-    if (frame->text && *frame->text) {
+    if (!strcmp(lb->fetchCommand, "FRAME_ROWS")) {
+        FOR_LOOP(i, SCR_NumFrames()) {
+            uiFrame_t const *child = SCR_Frame(i);
+            if (child && child->parent == frame->number && child->flags.type != FT_SCROLLBAR) count++;
+        }
+    } else if (frame->text && *frame->text) {
         count = 1;
         for (cstring_t p = frame->text; *p; p++) if (*p == '\n') count++;
     }
@@ -732,6 +737,12 @@ static bool CL_WindowSetScroll(clientWindow_t *window, uiFrame_t *owner, float v
         value = 0.0f;
     }
     value = MIN(1.0f, MAX(0.0f, value));
+    if (owner->flags.type == FT_LISTBOX && owner->buffer.data &&
+        owner->buffer.size >= sizeof(uiListBox_t) &&
+        !strcmp(((uiListBox_t const *)owner->buffer.data)->fetchCommand, "FRAME_ROWS")) {
+        int max_scroll = CL_WindowListMaxScroll(owner);
+        if (max_scroll > 0) value = (float)lroundf(value * max_scroll) / max_scroll;
+    }
     owner->value = value;
     CL_WindowRememberScroll(window, owner->number, value);
     /* TextArea scrollbars mirror their parent's local viewport state. */
@@ -1043,7 +1054,10 @@ bool CL_WindowMouseEvent(menuMouseEvent_t event, int x, int y, int32_t param) {
                 SCR_LayoutSetPointer(window->layout, 0, true);
                 return true;
             }
+            uiListBox_t const *list_wire = list && list->buffer.data &&
+                list->buffer.size >= sizeof(uiListBox_t) ? list->buffer.data : NULL;
             if (list && !list_scrollbar &&
+                (!list_wire || strcmp(list_wire->fetchCommand, "FRAME_ROWS")) &&
                 list->buffer.data && list->buffer.size >= sizeof(uiListBox_t)) {
                 uiListBox_t const *lb = list->buffer.data;
                 rect_t list_rect = *SCR_LayoutRect(list);
