@@ -62,6 +62,16 @@ void UI_LoadHudQuests(void) {
     hud.quest_item = UI_FindFrame("QuestItemListItem");
     QuestPrepareScrollableList(hud.quest.QuestMainContainer, "QuestMainScrollBar");
     QuestPrepareScrollableList(hud.quest.QuestOptionalContainer, "QuestOptionalScrollBar");
+    /* The authored optional list follows the main container's right edge.
+     * Since the main viewport is narrowed to make room for its scrollbar,
+     * anchor the optional list to its heading so its icon column stays aligned. */
+    if (hud.quest.QuestOptionalContainer && hud.quest.QuestOptionalTitle) {
+        memset(&hud.quest.QuestOptionalContainer->Points, 0,
+               sizeof(hud.quest.QuestOptionalContainer->Points));
+        hud.quest.QuestOptionalContainer->AnyPointsSet = true;
+        UI_SetPoint(hud.quest.QuestOptionalContainer, FRAMEPOINT_TOPLEFT,
+                    hud.quest.QuestOptionalTitle, FRAMEPOINT_BOTTOMLEFT, -0.003f, -0.002f);
+    }
     if (!hud.quest_row) BZ_FDF_REPORT_MISSING("QuestListItem");
     if (!hud.quest_item) BZ_FDF_REPORT_MISSING("QuestItemListItem");
 }
