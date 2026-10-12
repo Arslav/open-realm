@@ -1,5 +1,16 @@
 #include "s_skills.h"
 
+/* Spirit/beast summons vanish in a magical burst when killed or expired.
+ * Keep ordinary summoned units on their existing death path. */
+static bool summon_magical_death(uint32_t code) {
+    return code == MAKEFOURCC('A','O','s','f') || /* Feral Spirit */
+           code == MAKEFOURCC('A','N','s','g') || /* Summon Grizzly */
+           code == MAKEFOURCC('A','N','s','q') || /* Summon Quilbeast */
+           code == MAKEFOURCC('A','N','s','w') || /* Summon Hawk */
+           code == MAKEFOURCC('A','r','s','g') || /* Campaign Misha */
+           code == MAKEFOURCC('A','r','s','q');   /* Campaign Quilbeast */
+}
+
 static edict_t *summon_unit(edict_t *caster, uint32_t unit_id, uint32_t index, uint32_t count, float duration) {
     vec2_t loc;
     float angle;
@@ -32,6 +43,7 @@ static edict_t *summon_ability_unit(edict_t *caster, uint32_t code, uint32_t uni
     edict_t *summon = summon_unit(caster, unit_id, index, count, duration);
     if (summon) {
         summon->summon_ability = code;
+        if (summon_magical_death(code)) summon->aiflags |= AI_SUMMON_EXPLODES_ON_DEATH;
         if (WC3_MISHA_DEBUG_ENABLED() && code == MAKEFOURCC('A','r','s','g'))
             fprintf(stderr, "WC3_MISHA summon-created caster=%u summon=%u id=%.4s owner=%u ability=%.4s index=%u/%u\n",
                     (unsigned)caster->s.number, (unsigned)summon->s.number,
@@ -66,7 +78,10 @@ edict_t *S_SummonAt(edict_t *caster, uint32_t unit_id, vec2_t const *loc, float 
  * creating ability without every caller repeating this assignment. */
 edict_t *S_SummonAbilityAt(edict_t *caster, uint32_t code, uint32_t unit_id, vec2_t const *loc, float duration) {
     edict_t *summon = S_SummonAt(caster, unit_id, loc, duration);
-    if (summon) summon->summon_ability = code;
+    if (summon) {
+        summon->summon_ability = code;
+        if (summon_magical_death(code)) summon->aiflags |= AI_SUMMON_EXPLODES_ON_DEATH;
+    }
     return summon;
 }
 
