@@ -43,7 +43,10 @@ static edict_t *summon_ability_unit(edict_t *caster, uint32_t code, uint32_t uni
     edict_t *summon = summon_unit(caster, unit_id, index, count, duration);
     if (summon) {
         summon->summon_ability = code;
-        if (summon_magical_death(code)) summon->aiflags |= AI_SUMMON_EXPLODES_ON_DEATH;
+        if (summon_magical_death(code)) {
+            summon->aiflags |= AI_SUMMON_EXPLODES_ON_DEATH;
+            G_SpawnSummonMagicalEffect(summon);
+        }
         if (WC3_MISHA_DEBUG_ENABLED() && code == MAKEFOURCC('A','r','s','g'))
             fprintf(stderr, "WC3_MISHA summon-created caster=%u summon=%u id=%.4s owner=%u ability=%.4s index=%u/%u\n",
                     (unsigned)caster->s.number, (unsigned)summon->s.number,
@@ -80,7 +83,10 @@ edict_t *S_SummonAbilityAt(edict_t *caster, uint32_t code, uint32_t unit_id, vec
     edict_t *summon = S_SummonAt(caster, unit_id, loc, duration);
     if (summon) {
         summon->summon_ability = code;
-        if (summon_magical_death(code)) summon->aiflags |= AI_SUMMON_EXPLODES_ON_DEATH;
+        if (summon_magical_death(code)) {
+            summon->aiflags |= AI_SUMMON_EXPLODES_ON_DEATH;
+            G_SpawnSummonMagicalEffect(summon);
+        }
     }
     return summon;
 }
@@ -238,7 +244,8 @@ static void summon_execute(edict_t *caster, spellTarget_t st, abilityitem_t cons
     FOR_LOOP(i, count) {
         edict_t *summon = summon_ability_unit(caster, spell->code, unit_id, i, count, duration);
         if (!summon) continue;
-        G_SpawnAbilityEffectTarget(spell->code, WC3_EFFECT_TARGET, 0, summon, NULL, true);
+        if (!summon_magical_death(spell->code))
+            G_SpawnAbilityEffectTarget(spell->code, WC3_EFFECT_TARGET, 0, summon, NULL, true);
     }
 }
 
@@ -311,9 +318,7 @@ BZ_SIMPLE_SPELL_PROC(AbilitySpiritWolf) {
     loc.x += cosf(caster->s.angle) * distance;
     loc.y += sinf(caster->s.angle) * distance;
     FOR_LOOP(i, count) {
-        edict_t *summon = S_SummonAbilityAt(caster, spell->code, unit_id, &loc, duration);
-        if (!summon) continue;
-        G_SpawnAbilityEffectTarget(spell->code, WC3_EFFECT_SPECIAL, 0, summon, NULL, true);
+        (void)S_SummonAbilityAt(caster, spell->code, unit_id, &loc, duration);
     }
 }
 

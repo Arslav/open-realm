@@ -3500,6 +3500,7 @@ void G_ClearUnitOrderQueue(edict_t *);
 uint32_t G_UnitQueuedOrderCount(edict_t const *);
 void unit_birth(edict_t *);
 void unit_die(edict_t *, edict_t *);
+void G_SpawnSummonMagicalEffect(edict_t *);
 void unit_begin_decay(edict_t *);
 void G_RestartCorpseBoneDecayAfterCargo(edict_t *);
 edict_t *unit_create(uint32_t, uint32_t, vec2_t const *, float);

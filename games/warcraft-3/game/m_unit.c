@@ -419,7 +419,7 @@ void G_AwardKillBounty(edict_t *victim, edict_t *killer) {
  * Resolve art in the WC3 game module, never through a renderer rawcode table.
  * Prefer the buff's EffectArt and fall back to the summoned unit's SpecialArt,
  * which also covers stock/custom maps with no usable buff effect. */
-static void unit_spawn_summon_death_effect(edict_t *self) {
+void G_SpawnSummonMagicalEffect(edict_t *self) {
     AbilityData_t const *ability;
     cstring_t buff, art = NULL;
     UnitProfile_t const *profile;
@@ -563,7 +563,7 @@ void unit_die(edict_t *self, edict_t *attacker) {
         /* Death triggers, bounty, food and selection still use ordinary
          * unit_die semantics. Only presentation and remains differ: no
          * bloody Death sound/animation, no corpse, no raise/decay window. */
-        unit_spawn_summon_death_effect(self);
+        G_SpawnSummonMagicalEffect(self);
         self->s.renderfx |= RF_HIDDEN;
         self->aiflags |= AI_CORPSE_UNRAISABLE | AI_CORPSE_NO_DECAY;
         self->wait = FRAMETIME / 1000.0f;
