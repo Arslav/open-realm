@@ -113,7 +113,9 @@ static int FS_ScopeBindingLock(bool write_lock) {
 }
 
 static bool FS_ScopeCheckpointReferenced(int bindings, cstring_t id) {
-    int scan = dup(bindings);
+    /* dup shares the directory cursor: after one checkpoint lookup subsequent
+     * scans could miss live bindings and reclaim them. Open a fresh cursor. */
+    int scan = openat(bindings, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
     if (scan < 0) return true;
     DIR *entries = fdopendir(scan);
     if (!entries) { close(scan); return true; }
@@ -428,8 +430,8 @@ TEST(script_saves, empty_script_directories_do_not_trigger_checkpoints) {
     T_ASSERT(FS_BindScriptSaveScope("empty-path"));
     snprintf(bindings, sizeof(bindings), "%s/script/bindings", fs_save_dir);
     T_ASSERT(!FS_DirectoryExists(bindings));
-    strlcpy(fs_home_dir, old_home, sizeof(old_home));
-    strlcpy(fs_save_dir, old_save, sizeof(old_save));
+    strlcpy(fs_home_dir, old_home, sizeof(fs_home_dir));
+    strlcpy(fs_save_dir, old_save, sizeof(fs_save_dir));
     strlcpy(fs_script_session, old_session, sizeof(fs_script_session));
 }
 
@@ -467,8 +469,8 @@ TEST(script_saves, overwriting_campaign_slot_with_plain_save_revokes_checkpoint)
     T_ASSERT(!FS_RestoreScriptSaveScope("reused"));
     T_ASSERT(FS_RestoreScriptSaveScope("independent"));
     T_ASSERT(FS_ScriptSaveExists("Blizzard/Zones/OrcX01.w3z"));
-    strlcpy(fs_home_dir, old_home, sizeof(old_home));
-    strlcpy(fs_save_dir, old_save, sizeof(old_save));
+    strlcpy(fs_home_dir, old_home, sizeof(fs_home_dir));
+    strlcpy(fs_save_dir, old_save, sizeof(fs_save_dir));
     strlcpy(fs_script_session, old_session, sizeof(fs_script_session));
 }
 
@@ -495,8 +497,8 @@ TEST(script_saves, saved_script_file_uses_checkpoint_without_a_zone_transition) 
     FS_ResetScriptSaveScope();
     T_ASSERT(FS_RestoreScriptSaveScope("manual"));
     T_ASSERT(FS_ScriptSaveExists("script-slot"));
-    strlcpy(fs_home_dir, old_home, sizeof(old_home));
-    strlcpy(fs_save_dir, old_save, sizeof(old_save));
+    strlcpy(fs_home_dir, old_home, sizeof(fs_home_dir));
+    strlcpy(fs_save_dir, old_save, sizeof(fs_save_dir));
     strlcpy(fs_script_session, old_session, sizeof(fs_script_session));
 }
 
@@ -775,6 +777,67 @@ TEST(script_saves, checkpoint_rejects_symlinks_in_live_cache) {
     if (f) { T_EQ(fwrite("manual", 1, 6, f), 6); fclose(f); }
     T_ASSERT(!FS_BindScriptSaveScope("unsafe"));
     T_ASSERT(!FS_RestoreScriptSaveScope("unsafe"));
+    strlcpy(fs_home_dir, old_home, sizeof(fs_home_dir));
+    strlcpy(fs_save_dir, old_save, sizeof(fs_save_dir));
+    strlcpy(fs_script_session, old_session, sizeof(fs_script_session));
+}
+
+TEST(script_saves, collection_preserves_all_bound_checkpoints_and_removes_orphans) {
+    PATHSTR old_home, old_save, manual, zone;
+    char old_session[sizeof(fs_script_session)];
+    strlcpy(old_home, fs_home_dir, sizeof(old_home));
+    strlcpy(old_save, fs_save_dir, sizeof(old_save));
+    strlcpy(old_session, fs_script_session, sizeof(old_session));
+    FS_SetHomeDirectory(Test_TempPath("script-checkpoint-collection"));
+    FS_ResetScriptSaveScope();
+    T_ASSERT(FS_ScriptSavePath("Blizzard/Zones/zone.w3z", zone, sizeof(zone)));
+    FILE *f = fopen(zone, "wb");
+    T_NOT_NULL(f);
+    if (f) { T_EQ(fwrite("zone", 1, 4, f), 4); fclose(f); }
+    cstring_t names[] = { "bound-a", "bound-b", "orphan" };
+    for (unsigned i = 0; i < 3; i++) {
+        FS_SavePath(names[i], manual, sizeof(manual));
+        f = fopen(manual, "wb");
+        T_NOT_NULL(f);
+        if (f) { T_EQ(fwrite(names[i], 1, strlen(names[i]), f), strlen(names[i])); fclose(f); }
+        T_ASSERT(FS_BindScriptSaveScope(names[i]));
+    }
+    T_ASSERT(FS_DeleteSave("orphan"));
+    int checkpoints = FS_CheckpointRootDir(false);
+    T_ASSERT(checkpoints >= 0);
+    int scan = checkpoints >= 0 ? dup(checkpoints) : -1;
+    DIR *entries = scan >= 0 ? fdopendir(scan) : NULL;
+    T_NOT_NULL(entries);
+    if (!entries && scan >= 0) close(scan);
+    unsigned count = 0;
+    struct timespec age[2] = { { time(NULL) - 8 * 24 * 60 * 60, 0 },
+                              { time(NULL) - 8 * 24 * 60 * 60, 0 } };
+    struct dirent *entry;
+    while (entries && (entry = readdir(entries))) {
+        if (strlen(entry->d_name) != 32) continue;
+        T_EQ(utimensat(checkpoints, entry->d_name, age, AT_SYMLINK_NOFOLLOW), 0);
+        count++;
+    }
+    T_EQ(count, 3);
+    if (entries) closedir(entries);
+    if (checkpoints >= 0) close(checkpoints);
+    FS_ScopeCollectOrphans();
+    for (unsigned i = 0; i < 2; i++) {
+        T_ASSERT(FS_RestoreScriptSaveScope(names[i]));
+        T_ASSERT(FS_ScriptSaveExists("Blizzard/Zones/zone.w3z"));
+    }
+    checkpoints = FS_CheckpointRootDir(false);
+    scan = checkpoints >= 0 ? dup(checkpoints) : -1;
+    entries = scan >= 0 ? fdopendir(scan) : NULL;
+    T_NOT_NULL(entries);
+    if (!entries && scan >= 0) close(scan);
+    count = 0;
+    while (entries && (entry = readdir(entries)))
+        if (strlen(entry->d_name) == 32) count++;
+    T_EQ(count, 2);
+    if (entries) closedir(entries);
+    if (checkpoints >= 0) close(checkpoints);
+    FS_ResetScriptSaveScope();
     strlcpy(fs_home_dir, old_home, sizeof(fs_home_dir));
     strlcpy(fs_save_dir, old_save, sizeof(fs_save_dir));
     strlcpy(fs_script_session, old_session, sizeof(fs_script_session));

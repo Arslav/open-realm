@@ -228,6 +228,8 @@ TEST(wc3_spell, self_destruct_asds_entity_target_walks_and_detonates_in_range) {
         approach = ent;
         break;
     }
+    T_NOT_NULL(approach);
+    T_NOT_NULL(fix.goblin->goalentity);
     if (!approach || !fix.goblin->goalentity) { sd_done(fix); return; }
     T_FEQ(fix.goblin->goalentity->s.origin2.x, 200, 0.001f);
 
@@ -314,6 +316,105 @@ TEST(wc3_spell, self_destruct_pocket_factory_goblin_btlf_detonates) {
 	T_ASSERT(M_IsDead(goblin));
 	T_FEQ(enemy->health.value, 460, 0.001f);
 	G_SetSLKRows("AbilityData", old); free_slk_rows(rows);
+}
+
+
+/* Drive the command card and Move scheduler, including the target's lifetime. */
+static sdFix_t self_destruct_select_mobile_target(void) {
+    sdFix_t fix = sd_setup(BZ_ASDS);
+    edict_t *clent = &g_edicts[0];
+    gameClient_t *client = &game.clients[0];
+    char number[16];
+    cstring_t button[] = { "button", "Asds" };
+    cstring_t select[] = { "select", number };
+    clent->client = client;
+    fix.goblin->s.player = client->ps.number;
+    fix.goblin->think = monster_think;
+    fix.goblin->stand = unit_stand;
+    fix.goblin->movetype = MOVETYPE_STEP;
+    fix.goblin->collision = 16;
+    fix.goblin->unitinfo.MoveSpeed = 270;
+    unit_stand(fix.goblin);
+    gi.LinkEntity(fix.goblin);
+    fix.near_enemy->s.origin2 = MAKE(vec2_t, 200, 0);
+    gi.LinkEntity(fix.near_enemy);
+    G_SelectEntity(client, fix.goblin);
+    G_ClientCommand(clent, 2, button);
+    snprintf(number, sizeof(number), "%u", fix.near_enemy->s.number);
+    G_ClientCommand(clent, 2, select);
+    T_ASSERT(!M_IsDead(fix.goblin));
+    T_ASSERT(move_is_active_order_walk(fix.goblin));
+    T_ASSERT(run_test_jass("function main takes nothing returns nothing\nendfunction\n"));
+    return fix;
+}
+
+TEST(wc3_spell, self_destruct_entity_target_tracks_motion) {
+    sdFix_t fix = self_destruct_select_mobile_target();
+    fix.near_enemy->s.origin2 = MAKE(vec2_t, 500, 0);
+    gi.LinkEntity(fix.near_enemy);
+    self_destruct_run_frames(100);
+    T_ASSERT(M_IsDead(fix.goblin));
+    T_ASSERT(fix.near_enemy->health.value < 500);
+    T_ASSERT(Vector2_distance(&fix.goblin->s.origin2, &fix.near_enemy->s.origin2) <= 100);
+    sd_done(fix);
+}
+
+TEST(wc3_spell, self_destruct_entity_target_death_cancels_approach) {
+    sdFix_t fix = self_destruct_select_mobile_target();
+    fix.near_enemy->health.value = 0;
+    self_destruct_run_frames(100);
+    T_ASSERT(!M_IsDead(fix.goblin));
+    T_ASSERT(!move_is_active_order_walk(fix.goblin));
+    sd_done(fix);
+}
+
+TEST(wc3_spell, self_destruct_entity_target_reuse_cancels_approach) {
+    sdFix_t fix = self_destruct_select_mobile_target();
+    fix.near_enemy->spawn_time++;
+    self_destruct_run_frames(100);
+    T_ASSERT(!M_IsDead(fix.goblin));
+    T_ASSERT(!move_is_active_order_walk(fix.goblin));
+    T_FEQ(fix.near_enemy->health.value, 500, 0.001f);
+    sd_done(fix);
+}
+
+TEST(wc3_spell, self_destruct_entity_target_stop_cancels_approach) {
+    sdFix_t fix = self_destruct_select_mobile_target();
+    order_stop(fix.goblin);
+    self_destruct_run_frames(100);
+    T_ASSERT(!M_IsDead(fix.goblin));
+    T_ASSERT(!move_is_active_order_walk(fix.goblin));
+    T_FEQ(fix.near_enemy->health.value, 500, 0.001f);
+    sd_done(fix);
+}
+
+TEST(wc3_spell, self_destruct_entity_target_survives_save_load) {
+    uint32_t const formats[] = { 24, 25 };
+    FOR_LOOP(i, 2) {
+        sdFix_t fix = self_destruct_select_mobile_target();
+        cstring_t filename = Test_TempPath("wc3-sapper-approach.bin");
+        edict_t *approach = NULL;
+        ((mapInfo_t *)level.mapinfo)->fileFormat = formats[i];
+        FILTER_EDICTS(ent, ent->inuse && ent->owner == fix.goblin && ent->think == S_SpellTargetApproachThink)
+            approach = ent;
+        T_NOT_NULL(approach);
+        T_ASSERT(WriteGame(filename));
+        T_ASSERT(ReadGame(filename));
+        if (approach) {
+            T_ASSERT(approach->inuse && approach->think == S_SpellTargetApproachThink);
+            T_ASSERT(S_SpellChannelOwner(approach) == fix.goblin);
+            T_ASSERT(S_SpellChannelTarget(approach) == fix.near_enemy);
+        }
+        T_ASSERT(fix.goblin->goalentity == fix.near_enemy);
+        fix.near_enemy->s.origin2 = MAKE(vec2_t, 500, 0);
+        gi.LinkEntity(fix.near_enemy);
+        self_destruct_run_frames(100);
+        T_ASSERT(M_IsDead(fix.goblin));
+        T_ASSERT(fix.near_enemy->health.value < 500);
+        T_ASSERT(Vector2_distance(&fix.goblin->s.origin2, &fix.near_enemy->s.origin2) <= 100);
+        remove(filename);
+        sd_done(fix);
+    }
 }
 
 #endif

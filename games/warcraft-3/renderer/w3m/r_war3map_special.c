@@ -104,13 +104,15 @@ static bool R_W3ReadOverrideTable(w3CutoutReader_t *r, w3CutoutDoodadOverride_t 
     for (uint32_t i = 0; i < count; i++) {
         uint32_t base, target, mods;
         if (!R_W3CutoutU32(r, &base) || !R_W3CutoutU32(r, &target) ||
-            !R_W3CutoutU32(r, &mods) || mods > (uint32_t)((r->end - r->p) / 20)) return false;
+            !R_W3CutoutU32(r, &mods) || mods > (uint32_t)((r->end - r->p) / 13)) return false;
         w3CutoutDoodadOverride_t item = { .target = target ? target : base, .base = base };
         for (uint32_t m = 0; m < mods; m++) {
             uint32_t field, type, discard;
             cstring_t value = NULL;
-            if (!R_W3CutoutU32(r, &field) || !R_W3CutoutU32(r, &type) ||
-                !R_W3CutoutTake(r, 8, NULL)) return false; /* variation + data pointer */
+            /* W3D is field/type/value/end-ID, without W3A's level/data words.
+             * Skipping those words truncated path textures in retail maps.
+             * The shortest record is 13 bytes with an empty string value. */
+            if (!R_W3CutoutU32(r, &field) || !R_W3CutoutU32(r, &type)) return false;
             if (type == mod_int || type == mod_real || type == mod_unreal) {
                 if (!R_W3CutoutTake(r, 4, NULL)) return false;
             } else if (type == mod_bool || type == mod_char) {
@@ -275,7 +277,7 @@ TEST(wc3_terrain, special_doodad_w3d_path_override_decodes) {
     uint8_t bytes[128] = {0};
     size_t n = 0;
     uint32_t words[] = { 1, MAKEFOURCC('L','O','f','l'), MAKEFOURCC('D','0','0','E'), 1,
-                         MAKEFOURCC('d','p','t','x'), mod_pathingTexture, 0, 0 };
+                         MAKEFOURCC('d','p','t','x'), mod_pathingTexture };
     for (size_t i = 0; i < sizeof(words) / sizeof(words[0]); i++) {
         memcpy(bytes + n, &words[i], sizeof(words[i]));
         n += sizeof(words[i]);
@@ -298,6 +300,32 @@ TEST(wc3_terrain, special_doodad_w3d_path_override_decodes) {
     reader = (w3CutoutReader_t){ bytes, bytes + n - 2 };
     used = 0;
     T_ASSERT(!R_W3ReadOverrideTable(&reader, &row, &used, 1));
+}
+
+TEST(wc3_terrain, special_doodad_empty_path_and_scalar_overrides_decode) {
+    /* W3D uses field/type/value/end-ID, including an unaligned empty string. */
+    uint8_t bytes[64] = {0};
+    uint32_t words[] = { 1, MAKEFOURCC('L','O','f','l'), MAKEFOURCC('D','0','0','E'), 2,
+                        MAKEFOURCC('d','p','t','x'), mod_pathingTexture };
+    memcpy(bytes, words, sizeof(words));
+    size_t n = sizeof(words) + 1;
+    uint32_t tail[] = { MAKEFOURCC('D','0','0','E'), MAKEFOURCC('d','v','a','r'), mod_int, 3,
+                       MAKEFOURCC('D','0','0','E') };
+    memcpy(bytes + n, tail, sizeof(tail));
+    n += sizeof(tail);
+    w3CutoutReader_t reader = { bytes, bytes + n };
+    w3CutoutDoodadOverride_t row = {0};
+    uint32_t used = 0;
+    T_ASSERT(R_W3ReadOverrideTable(&reader, &row, &used, 1));
+    T_EQ(used, 1);
+    T_ASSERT(row.overrides_path);
+    T_STREQ(row.pathTex, "");
+    T_EQ(reader.p, reader.end);
+    for (size_t length = 0; length < n; length++) {
+        reader = (w3CutoutReader_t){ bytes, bytes + length };
+        used = 0;
+        T_ASSERT(!R_W3ReadOverrideTable(&reader, &row, &used, 1));
+    }
 }
 
 TEST(wc3_terrain, special_doodad_path_inherits_map_custom_id) {
@@ -338,7 +366,13 @@ TEST(wc3_terrain, special_doodad_path_follows_map_custom_inheritance) {
     T_NULL(R_W3CutoutPath(overrides[0].target, &slk, overrides, 2));
 }
 
+static handle_t R_W3TestCutoutAlloc(long size) { return malloc(size); }
+
 TEST(wc3_terrain, special_cliff_cutout_preserves_side_and_rear_rim) {
+    /* Filtered runs cannot rely on earlier model tests installing imports. */
+    refImport_t saved_imports = ri;
+    ri.MemAlloc = R_W3TestCutoutAlloc;
+    ri.MemFree = free;
     war3map_t map = { .width = 12, .height = 12 };
     war3map_t const *saved_world = tr.world;
     tr.world = &map;
@@ -366,5 +400,6 @@ TEST(wc3_terrain, special_cliff_cutout_preserves_side_and_rear_rim) {
     R_W3ClearSpecialCutouts();
     T_ASSERT(!R_W3SpecialCellCovered(&map, 3, 4));
     tr.world = saved_world;
+    ri = saved_imports;
 }
 #endif

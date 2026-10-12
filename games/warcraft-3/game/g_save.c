@@ -108,7 +108,8 @@ static uint32_t const save_commit = MAKEFOURCC('W', '3', 'O', 'K');
 /* Version 86 persists neutral hostile creep guard state. */
 /* Version 87 persists creep guard return recovery state. */
 /* Version 88 stores a single creep guard lifecycle phase. */
-static uint32_t const save_version = 88;
+/* Version 89 retains entity identity for ability-owned point-spell approaches. */
+static uint32_t const save_version = 89;
 #define SAVE_STREAM_BUFFER (1u << 20) // bytes; save files are several MB of field writes, so a large stdio buffer avoids per-4 KB syscalls
 #define MAX_SAVE_STRING (1u << 20) // bytes; bounds quest-string allocations from corrupt saves
 #define MAX_SAVE_GROUP_HANDLES 65536u // corrupt-save bound only; runtime group registry itself grows dynamically

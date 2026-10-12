@@ -6,7 +6,7 @@ The WC3 game module owns save/load. `GetGameAPI()` exposes `SaveGame` and `LoadG
 
 `WriteGame()` writes the current game state to a versioned binary file. The file contains:
 
-- `W3SV` magic, format version 85, canonical map path, the current `sizeof(edict_t)`, entity count, client count, script identity, and native-handle registry counts;
+- `W3SV` magic, format version 89, canonical map path, the current `sizeof(edict_t)`, entity count, client count, script identity, and native-handle registry counts;
 - level frame/time, authoritative Warcraft time-of-day state, map-global camera bounds, and started/script-started flags;
 - each client `GAMECLIENT` state, including its `PLAYER` state, JASS settings and dynamically sized `SetPlayerAbilityAvailable` rawcode list, runtime removed/result-presentation state, researched tech, text storage, camera values, messages, and HUD caches;
 - each camera target as an entity index;
@@ -26,6 +26,16 @@ The versioned layout retains the authoritative `level.timeofday` record and game
 ### Save compatibility policy
 
 Save compatibility is deliberately unsupported. Load only the current format version and serialized layout, and reject older or otherwise mismatched saves with a diagnostic. Bump the format version when the serialized layout, callback identity, or meaning changes, including changes that leave `sizeof(edict_t)` unchanged. Do not retain legacy layouts, migration defaults, compatibility aliases, or optional extension records.
+
+Version 89 retains the selected entity and its `spawn_time` for ability-owned
+entity cursors that execute as point spells. A pending Kaboom approach saves
+its `S_SpellTargetApproachThink` callback, `goalentity`, owner and channel
+incarnations through the existing serializer. It resumes following the target
+after load rather than casting at a frozen click position. Earlier saves are
+rejected because this changes the meaning of point-spell approach state.
+`wc3_spell.self_destruct_entity_target_survives_save_load` exercises the live
+pending approach in ROC/TFT map state, then moves the restored target and
+advances the real scheduler through detonation.
 
 The server's map-selection read checks both the format version and entity size before reloading a map. The state reader applies the same guards, validates the existing checksum and reference domains, and requires the current payload to end at the commit footer.
 
@@ -817,6 +827,14 @@ commit/delete opportunistically reclaims up to eight unreferenced checkpoints
 older than seven days under a cross-process advisory binding lock. Windows
 orphan-checkpoint collection and recovery of abandoned branches after an
 abrupt process crash remain follow-up work; never delete unrecognized data.
+
+Each checkpoint reference query opens a fresh binding-directory cursor with
+`openat(bindings, ".", ...)`. `dup(bindings)` shares the directory offset and
+can leave subsequent scans at end-of-directory, incorrectly treating bound
+checkpoints as orphans. The regression
+`script_saves.collection_preserves_all_bound_checkpoints_and_removes_orphans`
+ages two bound checkpoints and one orphan beyond the grace period, runs
+collection, restores both bound saves, and verifies only the orphan vanished.
 
 For each **immutable checkpoint file**, Linux first attempts a CoW reflink.
 This shares physical extents while keeping writable files independent; it is

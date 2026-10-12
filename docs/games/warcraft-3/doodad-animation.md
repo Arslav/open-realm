@@ -85,6 +85,19 @@ suppresses generated cliff faces. A custom ID may inherit through another
 map-local custom ID before reaching a stock doodad row. The renderer follows
 that parent chain and bounds traversal by the number of map-local rows, so
 cyclic object data fails lookup instead of hanging map registration.
+The renderer's bounded reader uses the same simple W3D modification layout as
+the game parser: field ID, type, value, trailing object ID. The local OrcX01
+version-1 data puts `PathTextures\4x4SimpleSolid.tga` immediately after `dptx`
+and its string type. Reading two nonexistent level/data-pointer words used to
+strip the first eight bytes of that path. Empty strings are valid explicit
+path overrides; the minimum modification width is 13 bytes. Tests cover a
+stock-shaped path record, an empty path followed by a scalar modification,
+unaligned fields, and every truncated prefix of the latter record.
+
+Run `make test-renderer-model test-renderer-shadows` for these parser and
+cutout checks. The cutout test installs its own memory imports so filtered
+`build/bin/test_renderer_model 'wc3_terrain.*'` runs are independent of model
+test order.
 
 OrcX01's Forcewall MDX has no geoset vertices: its appearance comes from two
 `PRE2` particle emitters using `Textures\Clouds8x8ModBlight.blp` and
