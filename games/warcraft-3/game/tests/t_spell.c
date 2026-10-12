@@ -2118,6 +2118,51 @@ TEST(wc3_spell, simple_ability_summons_record_owner_ability_and_timed_life) {
     free_slk_rows(rows);
 }
 
+/* OrcX01 issues the inherited "spiritwolf" order after removing the
+ * preplaced Misha. Rexxar's Arsg is based on AOsf, but must summon Arsg's
+ * authored Misha unit rather than the base ability's Spirit Wolves. */
+TEST(wc3_spell, rexxar_spiritwolf_order_uses_learned_summon_misha_alias) {
+    const char slk[] =
+        "ID;PWXL;N;EBB;Y3;X6\n"
+        "C;Y1;X1;K\"alias\"\nC;Y1;X2;K\"code\"\nC;Y1;X3;K\"DataA1\"\n"
+        "C;Y1;X4;K\"DataB1\"\nC;Y1;X5;K\"UnitID1\"\nC;Y1;X6;K\"levels\"\n"
+        "C;Y2;X1;K\"Arsg\"\nC;Y2;X2;K\"AOsf\"\nC;Y2;X3;K1\n"
+        "C;Y2;X4;K2\nC;Y2;X5;K\"ngzc\"\nC;Y2;X6;K1\n"
+        "C;Y3;X1;K\"AOsf\"\nC;Y3;X2;K\"AOsf\"\nC;Y3;X3;K1\n"
+        "C;Y3;X4;K2\nC;Y3;X5;K\"nwlg\"\nC;Y3;X6;K1\nE\n";
+    UnitAbilities_t abilities = { .abilList = "", .heroAbilList = "Arsg" };
+    slkTestData_t *rows = parse_slk_string(slk), *old;
+    edict_t *rexxar;
+    uint32_t misha_count = 0, wolf_count = 0;
+
+    reset_entities();
+    setup_test_world();
+    old = G_SetSLKRows("AbilityData", rows);
+    rexxar = make_hero(MAKEFOURCC('O','r','e','x'), 500.0f, 200.0f, 0.0f, 0.0f);
+    rexxar->data.UnitAbilities = &abilities;
+    rexxar->heroabilities[0] = MAKE(heroability_t, .code = MAKEFOURCC('A','r','s','g'), .level = 1);
+    rexxar->s.player = 0;
+
+    T_EQ(G_AbilityCode(MAKEFOURCC('A','r','s','g')), MAKEFOURCC('A','O','s','f'));
+    T_EQ(G_UnitAbilityLevel(rexxar, MAKEFOURCC('A','O','s','f')), 1);
+    T_ASSERT(S_SpellAbilityForCode(MAKEFOURCC('A','r','s','g')) != NULL);
+    T_ASSERT(G_UnitAbilityResearchAvailable(rexxar, MAKEFOURCC('A','r','s','g')));
+    T_ASSERT(G_IsUnitAbilityAvailable(rexxar, MAKEFOURCC('A','r','s','g')));
+    T_ASSERT(unit_issueimmediateorder(rexxar, "spiritwolf"));
+    FILTER_EDICTS(unit, unit->inuse && unit->owner == rexxar) {
+        if (unit->class_id == MAKEFOURCC('n','g','z','c')) {
+            T_EQ(unit->summon_ability, MAKEFOURCC('A','r','s','g'));
+            misha_count++;
+        }
+        if (unit->class_id == MAKEFOURCC('n','w','l','g')) wolf_count++;
+    }
+    T_EQ(misha_count, 1);
+    T_EQ(wolf_count, 0);
+
+    G_SetSLKRows("AbilityData", old);
+    free_slk_rows(rows);
+}
+
 TEST(wc3_spell, hero_duration_uses_herodur_col) {
 	slkTestData_t *rows = parse_slk_string(slk_spell_data);
 	slkTestData_t *old = G_SetSLKRows("AbilityData", rows);

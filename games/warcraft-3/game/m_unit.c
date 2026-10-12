@@ -682,6 +682,40 @@ cstring_t G_OrderId2String(uint32_t id) {
     return GetClassName(id);
 }
 
+static uint32_t unit_spell_code_for_base(edict_t const *unit, uint32_t base_code) {
+    if (!unit || !base_code) return 0;
+    /* A shared order can belong to a concrete campaign alias (for example
+     * Rexxar's Arsg inherits AOsf's "spiritwolf" order). Keep that rawcode
+     * through dispatch so the alias's authored summon data and handler win. */
+    FOR_LOOP(i, MAX_HERO_ABILITIES) {
+        heroability_t const *hero_ability = unit->heroabilities + i;
+        uint32_t code = hero_ability->code;
+        abilityitem_t item;
+        if (!hero_ability->level || !code || G_AbilityCode(code) != base_code) continue;
+        item = S_AbilityItem(code);
+        if (item.ability && (item.ability->flags & AB_SPELL)) return code;
+    }
+    if (unit->data.UnitAbilities && unit->data.UnitAbilities->abilList) {
+        PARSE_LIST(unit->data.UnitAbilities->abilList, token, parse_segment) {
+            uint32_t code = 0;
+            abilityitem_t item;
+            if (strlen(token) != 4) continue;
+            memcpy(&code, token, sizeof(code));
+            if (G_AbilityCode(code) != base_code) continue;
+            item = S_AbilityItem(code);
+            if (item.ability && (item.ability->flags & AB_SPELL)) return code;
+        }
+    }
+    FOR_LOOP(i, ARRAY_COUNT(unit->abilities.added)) {
+        uint32_t code = unit->abilities.added[i];
+        abilityitem_t item;
+        if (!code || G_AbilityCode(code) != base_code) continue;
+        item = S_AbilityItem(code);
+        if (item.ability && (item.ability->flags & AB_SPELL)) return code;
+    }
+    return G_UnitAbilityLevel(unit, base_code) ? base_code : 0;
+}
+
 static uint32_t unit_spell_code_for_order(edict_t const *unit, cstring_t order) {
     if (!unit || !order) return 0;
     ability_t const *ordered = FindAbilityByOrder(order);
@@ -692,10 +726,10 @@ static uint32_t unit_spell_code_for_order(edict_t const *unit, cstring_t order) 
     }
     FOR_LOOP(i, sizeof(unit_order_defs) / sizeof(unit_order_defs[0])) {
         uint32_t const code = unit_order_defs[i].ability;
-        uint32_t const level = code ? G_UnitAbilityLevel(unit, code) : 0;
         ability_t const *spell = code ? S_SpellAbilityForCode(code) : NULL;
-        if (code && !strcmp(order, unit_order_defs[i].name) && level && spell) {
-            return code;
+        if (code && !strcmp(order, unit_order_defs[i].name) && spell) {
+            uint32_t const resolved = unit_spell_code_for_base(unit, G_AbilityCode(code));
+            if (resolved && S_SpellAbilityForCode(resolved)) return resolved;
         }
     }
     return 0;
