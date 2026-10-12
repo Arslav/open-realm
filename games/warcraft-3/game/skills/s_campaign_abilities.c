@@ -435,7 +435,17 @@ BZ_SIMPLE_SPELL_PROC(AbilityParasiteCampaign) { campaign_status_execute(caster, 
 BZ_SIMPLE_SPELL_PROC(AbilityCycloneCampaign) { campaign_status_execute(caster, st, spell); }
 BZ_SIMPLE_SPELL_PROC(AbilitySummoningRitual) { S_SummonAbilityUnits(caster, spell->code, &st); }
 BZ_SIMPLE_SPELL_PROC(AbilitySummonQuilbeastCampaign) { S_SummonAbilityUnits(caster, spell->code, &st); }
-BZ_SIMPLE_SPELL_PROC(AbilitySummonMisha) { S_SummonAbilityUnits(caster, spell->code, &st); }
+BZ_SIMPLE_SPELL_PROC(AbilitySummonMisha) {
+    /* Rexxar's campaign Misha is the one-unit counterpart to Feral Spirit:
+     * recasting replaces only the living Misha summoned by this caster. */
+    if (!caster) return;
+    FILTER_EDICTS(unit, unit->inuse && unit->owner == caster &&
+                  unit->summon_ability == spell->code && !M_IsDead(unit)) {
+        if (unit->die) unit->die(unit, caster);
+        else unit_die(unit, caster);
+    }
+    S_SummonAbilityUnits(caster, spell->code, &st);
+}
 BZ_SIMPLE_SPELL_PROC(AbilityStampedeCampaign) { S_SummonAbilityUnits(caster, spell->code, &st); }
 BZ_SIMPLE_SPELL_PROC(AbilityBattleRoar) {
     uint32_t level = S_SpellLevel(caster, spell->code); cstring_t buff = S_SpellBuffId(spell->code, level);
