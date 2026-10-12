@@ -35,6 +35,27 @@ game UI authoring
 including `-1` sentinels. Code reading an unsigned wire field must cast its
 result to `BYTE`; do not globally change `MSG_ReadByte` semantics.
 
+## Frame Point ABI
+
+`common/msg.c:uiFrameFields` serializes each `uiFrame_t.points` element and
+`flagsvalue` as one four-byte `NFT_LONG`. Bitfield allocation units must therefore
+agree across platforms; a same-build encoder/decoder does not make an oversized
+point safe because the schema still copies only four bytes.
+
+The mixed enum/`uint8_t`/`int16_t` point declaration occupies four bytes with
+the Unix ABI but eight with Microsoft bitfield packing. The enum/`uint8_t`
+`flags` declaration similarly puts `alphaMode` outside `flagsvalue` under that
+ABI. [PR #628](https://github.com/corepunch/open-realm/pull/628) uses four-byte
+bitfield base types for both, preserving the Unix wire image. A point with
+`targetPos=FPP_MAX`, `used=1`, `relativeTo=UI_PARENT`, and `offset=-12345`
+must encode as `82 ff c7 cf` on supported little-endian targets.
+
+For an ABI diagnostic, build a fresh `test-core` with `CC='clang -mms-bitfields'`
+and separate `BIN_DIR`/`LIB_DIR` paths, then compare against the default build.
+PR #628 adds `net.layout_point_fields_survive_the_wire` to exercise the actual
+layout encoder and client decoder. This diagnostic checks packing; it does not
+replace a native Windows build for SDK, linker, or runtime verification.
+
 ## What Went Wrong
 
 In the first textured WoW quest scrollbar implementation, I made the mistake of
