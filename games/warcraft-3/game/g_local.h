@@ -1065,6 +1065,9 @@ typedef struct {
 #define WC3_TUTORIAL_DEBUG_ENABLED() false
 #endif
 
+/* Focused diagnostics for the Orc campaign's Rexxar/Misha summon path. */
+#define WC3_MISHA_DEBUG_ENABLED() (gi.CvarString && atoi(gi.CvarString("wc3_misha_debug", "0")) != 0)
+
 /* Focused diagnostics for UndeadX07c's periodic flame damage and texttags. */
 
 typedef struct {

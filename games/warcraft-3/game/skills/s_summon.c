@@ -30,7 +30,17 @@ static edict_t *summon_unit(edict_t *caster, uint32_t unit_id, uint32_t index, u
 static edict_t *summon_ability_unit(edict_t *caster, uint32_t code, uint32_t unit_id, uint32_t index,
                                     uint32_t count, float duration) {
     edict_t *summon = summon_unit(caster, unit_id, index, count, duration);
-    if (summon) summon->summon_ability = code;
+    if (summon) {
+        summon->summon_ability = code;
+        if (WC3_MISHA_DEBUG_ENABLED() && code == MAKEFOURCC('A','r','s','g'))
+            fprintf(stderr, "WC3_MISHA summon-created caster=%u summon=%u id=%.4s owner=%u ability=%.4s index=%u/%u\n",
+                    (unsigned)caster->s.number, (unsigned)summon->s.number,
+                    (cstring_t)&summon->class_id, (unsigned)summon->s.player,
+                    (cstring_t)&code, index + 1, count);
+    } else if (WC3_MISHA_DEBUG_ENABLED() && code == MAKEFOURCC('A','r','s','g')) {
+        fprintf(stderr, "WC3_MISHA summon-failed caster=%u unit=%.4s index=%u/%u\n",
+                (unsigned)caster->s.number, (cstring_t)&unit_id, index + 1, count);
+    }
     return summon;
 }
 
@@ -74,6 +84,11 @@ void S_SummonAbilityUnits(edict_t *caster, uint32_t code, spellTarget_t const *t
     unit_id = S_SpellUnitId(code, level);
     count = (uint32_t)MAX(1.0f, S_SpellData(code, level, 1));
     duration = S_SpellDuration(code, level, false);
+    if (WC3_MISHA_DEBUG_ENABLED() && code == MAKEFOURCC('A','r','s','g'))
+        fprintf(stderr, "WC3_MISHA summon-request caster=%u ability=Arsg level=%u unit=%.4s count=%u duration=%.2f target_type=%u origin=(%.1f,%.1f)\n",
+                (unsigned)caster->s.number, level, unit_id ? (cstring_t)&unit_id : "----",
+                count, duration, target ? (unsigned)target->type : 0u,
+                caster->s.origin2.x, caster->s.origin2.y);
     if (!unit_id) return;
     if (target && target->type == SPELL_TARGET_POINT) {
         FOR_LOOP(i, count) (void)S_SummonAbilityAt(caster, code, unit_id, &target->point, duration);

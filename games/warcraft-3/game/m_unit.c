@@ -1300,8 +1300,20 @@ bool unit_issueimmediateorder(edict_t *self, cstring_t order) {
     }
     {
         uint32_t const spell_code = unit_spell_code_for_order(self, order);
+        if (WC3_MISHA_DEBUG_ENABLED() && !strcmp(order, "spiritwolf")) {
+            fprintf(stderr,
+                    "WC3_MISHA order unit=%u id=%.4s player=%u order=%s ability=%.4s mana=%.1f/%.1f\n",
+                    (unsigned)self->s.number, (cstring_t)&self->class_id,
+                    (unsigned)self->s.player, order,
+                    spell_code ? (cstring_t)&spell_code : "----",
+                    self->mana.value, self->mana.max_value);
+        }
         if (spell_code) {
             bool const accepted = S_CastNoTargetSpell(self, spell_code);
+            if (WC3_MISHA_DEBUG_ENABLED() && !strcmp(order, "spiritwolf"))
+                fprintf(stderr, "WC3_MISHA order-result unit=%u ability=%.4s accepted=%u mana=%.1f/%.1f\n",
+                        (unsigned)self->s.number, (cstring_t)&spell_code,
+                        (unsigned)accepted, self->mana.value, self->mana.max_value);
             if (accepted) {
                 G_CreepGuardExplicitOrder(self);
                 S_UnitAbilityOrderAccepted(self, order);
@@ -1342,6 +1354,13 @@ edict_t *unit_create(uint32_t player, uint32_t unitid, vec2_t const *location, f
     edict_t *unit = SP_SpawnAtLocationNoBirth(unitid, player, location);
     if (!unit) {
         return NULL;
+    }
+    /* A Hero created by map JASS on a fresh mission starts ready to play.
+     * Transition-carried Heroes use RestoreUnit, which applies their cached
+     * health and mana after spawning and therefore keeps the carried values. */
+    if (G_UnitIsHero(unit)) {
+        unit->health.value = unit->health.max_value;
+        unit->mana.value = unit->mana.max_value;
     }
     /* Warsmash CreateUnit delegates to createUnitSimple, which checks the
      * spawned unit against static pathing and nudges it to a legal point. */
