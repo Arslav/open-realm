@@ -772,7 +772,8 @@ void CL_Input(void) {
                     break;
                 }
                 if (cls.state != ca_active) break;
-                if (CL_WindowMouseEvent(MENU_MOUSE_DOWN, event.button.x, event.button.y, event.button.button)) break;
+                if (CL_WindowMouseEventWithMods(MENU_MOUSE_DOWN, event.button.x, event.button.y,
+                                                event.button.button, CL_BindMods(SDL_GetModState()))) break;
                 if (SCR_LayoutMouseEvent(&(layoutMouseEvent_t){ MENU_MOUSE_DOWN, event.button.x, event.button.y, event.button.button, (CL_BindMods(SDL_GetModState()) & KEY_MOD_SHIFT) != 0 })) break;
                 if (event.button.button == SDL_BUTTON_LEFT) {
                     mouse.event = UI_LEFT_MOUSE_DOWN;
@@ -790,7 +791,8 @@ void CL_Input(void) {
                     break;
                 }
                 if (cls.state != ca_active) break;
-                if (CL_WindowMouseEvent(MENU_MOUSE_UP, event.button.x, event.button.y, event.button.button)) break;
+                if (CL_WindowMouseEventWithMods(MENU_MOUSE_UP, event.button.x, event.button.y,
+                                                event.button.button, CL_BindMods(SDL_GetModState()))) break;
                 if (SCR_LayoutMouseEvent(&(layoutMouseEvent_t){ MENU_MOUSE_UP, event.button.x, event.button.y, event.button.button, (CL_BindMods(SDL_GetModState()) & KEY_MOD_SHIFT) != 0 })) break;
                 if (event.button.button == SDL_BUTTON_LEFT) {
                     mouse.event = UI_LEFT_MOUSE_UP;
@@ -807,7 +809,8 @@ void CL_Input(void) {
                     break;
                 }
                 if (cls.state != ca_active) break;
-                if (CL_WindowMouseEvent(MENU_MOUSE_MOVE, event.motion.x, event.motion.y, 0)) break;
+                if (CL_WindowMouseEventWithMods(MENU_MOUSE_MOVE, event.motion.x, event.motion.y, 0,
+                                                CL_BindMods(SDL_GetModState()))) break;
                 SCR_LayoutMouseEvent(&(layoutMouseEvent_t){ MENU_MOUSE_MOVE, event.motion.x, event.motion.y, 0, false });
                 CL_MouseMotion(&event.motion);
                 hover_motion = event.motion; hover_update_pending = true;
@@ -823,7 +826,8 @@ void CL_Input(void) {
                         break;
                     }
                     if (cls.state != ca_active) break;
-                    if (CL_WindowMouseEvent(MENU_MOUSE_SCROLL, x, y, MENU_MOUSE_PARAM(event.wheel.x, event.wheel.y))) break;
+                    if (CL_WindowMouseEventWithMods(MENU_MOUSE_SCROLL, x, y,
+                            MENU_MOUSE_PARAM(event.wheel.x, event.wheel.y), CL_BindMods(SDL_GetModState()))) break;
                     SCR_LayoutMouseEvent(&(layoutMouseEvent_t){ MENU_MOUSE_SCROLL, x, y, MENU_MOUSE_PARAM(event.wheel.x, event.wheel.y), false });
                     /* Discrete wheel ticks are bindable keys (MWHEELUP / MWHEELDOWN). */
                     if (cls.key_dest == key_console || event.wheel.y == 0)

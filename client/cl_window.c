@@ -1028,7 +1028,7 @@ static void CL_WindowEditPointer(clientWindow_t *window, uint32_t frame_number,
     if (!extend) value->anchor = cursor;
 }
 
-bool CL_WindowMouseEvent(menuMouseEvent_t event, int x, int y, int32_t param) {
+bool CL_WindowMouseEventWithMods(menuMouseEvent_t event, int x, int y, int32_t param, uint32_t mods) {
     vec2_t point = SCR_ScreenToUI(x, y);
     clientWindow_t *modal = CL_WindowModal(), *window;
     uiFrame_t const *frame;
@@ -1110,7 +1110,7 @@ bool CL_WindowMouseEvent(menuMouseEvent_t event, int x, int y, int32_t param) {
             if (!edit) edit = CL_WindowFrameAtType(&point, FT_GLUEEDITBOX);
             if (!edit) edit = CL_WindowFrameAtType(&point, FT_SLASHCHATBOX);
             if (edit) {
-                bool extend = (SDL_GetModState() & KMOD_SHIFT) != 0;
+                bool extend = (mods & KEY_MOD_SHIFT) != 0;
                 CL_WindowFocusEdit(window, edit);
                 CL_WindowEditPointer(window, edit->number, point.x, extend);
                 cl_windows.edit_drag_window = window;
@@ -1200,6 +1200,10 @@ bool CL_WindowMouseEvent(menuMouseEvent_t event, int x, int y, int32_t param) {
     }
     if (event == MENU_MOUSE_DOWN && param == 1 && !modal) cl_windows.focus = NULL;
     return modal != NULL;
+}
+
+bool CL_WindowMouseEvent(menuMouseEvent_t event, int x, int y, int32_t param) {
+    return CL_WindowMouseEventWithMods(event, x, y, param, 0);
 }
 
 bool CL_WindowKeyEvent(int key, uint32_t mods) {

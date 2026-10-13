@@ -3140,7 +3140,7 @@ TEST(wc3_game, hud_quest_rows_show_undiscovered_and_completed_state) {
     complete = UI_FindChildFrame(list, "QuestListItemComplete");
     T_STREQ(title->Text, "> Finished");
     T_STREQ(complete->Text, "(QUESTCOMPLETED)");
-    T_FEQ(title->Font.Color.r, 64, 0.001f);
+    T_FEQ(title->Font.Color.r, 255, 0.001f);
     title = UI_FindChildFrame(optional, "QuestListItemTitle");
     T_STREQ(title->Text, "UNDISCOVERED_QUEST");
 

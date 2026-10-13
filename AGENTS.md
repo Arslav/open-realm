@@ -434,7 +434,10 @@ Full rationale, ownership table and worked example: [docs/architecture/game-clie
 ## Mouse Input Architecture
 
 - Mouse state is owned by the client: the `mouse` global (`mouseEvent_t` in `client/cl_input.c`) is the single source of truth.
-- The UI library receives mouse events via `menu.MouseEvent(x, y, button, down)` — push-based, called during `SDL_PollEvent` in `CL_Input()`.
+- The UI library receives push-based input callbacks during `SDL_PollEvent` in
+  `CL_Input()`: `menu.MouseEvent(event, x, y, param, mods)` and
+  `menu.KeyEvent(key, mods, down, time)`. `mods` carries the current
+  Shift/Ctrl/Alt modifier bits.
 - Game-mode-specific mouse behavior lives in per-game `cl_input_<game>.c` files via the `CL_InputMode*` functions.
 - Never create a separate mouse state struct in game UI code. Never poll mouse event state during draw.
 

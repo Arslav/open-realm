@@ -1583,12 +1583,14 @@ TEST(menu_fdf, glue_checkbox_toggles_and_draws_check_highlight) {
 
     test_mouse_pos.x = 130;
     test_mouse_pos.y = 130;
+    M_MouseEvent(MENU_MOUSE_DOWN, 130, 130, 1, 0);
     M_MouseEvent(MENU_MOUSE_UP, 130, 130, 1, 0);
     captured_draw_calls = 0;
     UI_DrawFrame(root);
     T_ASSERT(checkbox->CheckBox.Checked);
     T_EQ(captured_draw_calls, 2);
 
+    M_MouseEvent(MENU_MOUSE_DOWN, 130, 130, 1, 0);
     M_MouseEvent(MENU_MOUSE_UP, 130, 130, 1, 0);
     captured_draw_calls = 0;
     UI_DrawFrame(root);
@@ -1628,6 +1630,7 @@ TEST(menu_fdf, control_map_list_receives_mouse_clicks) {
     /* Populate the layout cache, then click in the first 0.019-high row. */
     UI_DrawFrame(root);
     captured_command[0] = '\0';
+    M_MouseEvent(MENU_MOUSE_DOWN, 188, 144, 1, 0);
     M_MouseEvent(MENU_MOUSE_UP, 188, 144, 1, 0);
     T_STREQ(captured_command, "test_map_list_select 0");
 }
@@ -1757,7 +1760,7 @@ TEST(menu_fdf, editbox_without_text_frame_click_focus_accepts_text_input) {
     T_ASSERT(UI_EditHasFocus(editbox));
     M_TextInput("hello");
     T_STREQ(UI_EditValue(editbox), "hello");
-    T_ASSERT(!M_EditKey(13));
+    T_ASSERT(!M_EditKey(13, 0));
 }
 
 TEST(menu_fdf, options_video_mode_command_selects_fixed_or_native_mode) {
@@ -2666,6 +2669,7 @@ TEST(menu_fdf, console_queue_defers_clicks_and_separates_commands) {
     T_NOT_NULL(button);
     mi.Cmd_ExecuteText = Cbuf_AddText;
     mi.Cvar_Set = test_cvar_set;
+    button->event_handler(button, MENU_MOUSE_DOWN, 0, 0, 1);
     button->event_handler(button, MENU_MOUSE_UP, 0, 0, 1);
     T_ASSERT(UI_GetCurrentScreen() == &mainMenuScreen);
     T_ASSERT(!M_IsTransitioning());

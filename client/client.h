@@ -226,6 +226,7 @@ void CL_WindowClose(uint32_t id);
 void CL_WindowClear(void);
 void CL_WindowDraw(void);
 bool CL_WindowMouseEvent(menuMouseEvent_t event, int x, int y, int32_t param);
+bool CL_WindowMouseEventWithMods(menuMouseEvent_t event, int x, int y, int32_t param, uint32_t mods);
 bool CL_WindowKeyEvent(int key, uint32_t mods);
 /* Repeats are handled only by the active editor; never dispatched to gameplay binds. */
 bool CL_WindowEditRepeat(int key, uint32_t mods);

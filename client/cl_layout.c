@@ -26,6 +26,7 @@ static bool SCR_FrameRowsScroll(uiFrame_t const *frame, uiFrame_t const **row_ou
                                 uint32_t *offset_out, bool *listed_out) {
     uiFrame_t const *owner = NULL, *row = frame;
     uiListBox_t const *list;
+    rect_t const *view;
     uint32_t count = 0, index = UINT32_MAX, depth = 0;
     int visible, max_scroll, offset;
     float item_height;
@@ -53,7 +54,8 @@ static bool SCR_FrameRowsScroll(uiFrame_t const *frame, uiFrame_t const **row_ou
         }
     }
     if (index == UINT32_MAX) return false;
-    visible = MAX((int)floorf(runtimes[owner->number].rect.h / item_height + 0.0001f), 1);
+    view = SCR_LayoutRect(owner);
+    visible = MAX((int)floorf(view->h / item_height + 0.0001f), 1);
     max_scroll = MAX((int)count - visible, 0);
     offset = (int)lroundf(MIN(MAX(owner->value, 0.0f), 1.0f) * max_scroll);
     if (row_out) *row_out = row;
