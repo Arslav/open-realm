@@ -274,6 +274,14 @@ static void PopulateQuestList(frameDef_t *container, bool required, quest_t cons
                         ? template_button->Control.Backdrop.Disabled
                         : template_button->Control.Backdrop.Normal,
                     sizeof(button->Control.Backdrop.Normal));
+            if (quest->completed && !quest->failed) {
+                frameDef_t *disabled_backdrop = UI_FindChildFrame(button, "ButtonDisabledBackdropTemplate");
+                /* QuestButtonDisabledBackdropTemplate uses the same 0.128
+                 * texture scale as the normal quest art but omits the tile
+                 * flag. Enable tiling so wider quest buttons retain its grain. */
+                if (disabled_backdrop && disabled_backdrop->Type == FT_BACKDROP)
+                    disabled_backdrop->Backdrop.TileBackground = true;
+            }
         }
         if (icon_container && icon_container->Type == FT_BACKDROP) {
             icon_container->Backdrop.Background = icon_path && *icon_path
