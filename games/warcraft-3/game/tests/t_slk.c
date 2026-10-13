@@ -35,6 +35,46 @@ static void wc3_slk_write_w3d_mod(uint8_t **cursor, uint32_t field, uint32_t typ
     wc3_slk_write_u32(cursor, 0); /* modification terminator */
 }
 
+TEST(wc3_slk, doodad_w3d_v1_uses_object_modification_layout) {
+    uint8_t payload[128] = { 0 }, *cursor = payload;
+    handle_t archive = NULL;
+    cstring_t path = Test_TempPath("doodad-w3d-v1-layout.mpq");
+    uint32_t dvar = MAKEFOURCC('d','v','a','r');
+    uint32_t original_id = MAKEFOURCC('L','O','f','l');
+    uint32_t value = 37;
+
+    wc3_slk_write_u32(&cursor, 1); /* format version */
+    wc3_slk_write_u32(&cursor, 1); /* original objects */
+    wc3_slk_write_u32(&cursor, original_id);
+    wc3_slk_write_u32(&cursor, 0);
+    wc3_slk_write_u32(&cursor, 1);
+    wc3_slk_write_u32(&cursor, dvar);
+    wc3_slk_write_u32(&cursor, mod_int);
+    wc3_slk_write_u32(&cursor, value);
+    wc3_slk_write_u32(&cursor, 0); /* modification terminator */
+    wc3_slk_write_u32(&cursor, 0); /* custom objects */
+
+    T_ASSERT(SFileCreateArchive(path, 0, 16, &archive));
+    T_ASSERT(SFileAddFileFromBuffer(archive, "war3map.w3d", payload,
+                                    (uint32_t)(cursor - payload)));
+    T_ASSERT(SFileCloseArchive(archive));
+    T_ASSERT(SFileOpenArchive(path, 0, 0, &archive));
+    CM_ReadDoodadOverrides(archive);
+    SFileCloseArchive(archive);
+
+    T_EQ(world.info.num_originalDoodads, 1);
+    T_EQ(world.info.num_userCreatedDoodads, 0);
+    T_EQ(world.info.originalDoodads[0].modifications[0].type, mod_int);
+    T_EQ(world.info.originalDoodads[0].modifications[0].level, 0);
+    T_EQ(*(uint32_t *)world.info.originalDoodads[0].modifications[0].data, value);
+
+    gi.MemFree(world.info.originalDoodads[0].modifications[0].data);
+    gi.MemFree(world.info.originalDoodads[0].modifications);
+    gi.MemFree(world.info.originalDoodads);
+    world.info.num_originalDoodads = 0;
+    world.info.originalDoodads = NULL;
+}
+
 TEST(wc3_slk, doodad_w3d_uses_ability_style_modification_layout) {
     uint8_t payload[256] = { 0 }, *cursor = payload;
     handle_t archive = NULL;
