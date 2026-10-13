@@ -4710,7 +4710,7 @@ TEST(wc3_api, jass_sound_runtime_tracks_one_shot_volume_and_attachment_safely) {
 
 }
 
-TEST(wc3_api, repeated_wait_for_sound_only_waits_until_voice_end_once) {
+TEST(wc3_api, repeated_wait_for_sound_tracks_remaining_voice_offsets) {
     gameClient_t *gc = &game.clients[0];
     gsound_t lifetime = { 0 };
     void (*old_sound)(edict_t *, int, int, float, float, float) = gi.Sound;
@@ -4748,20 +4748,26 @@ TEST(wc3_api, repeated_wait_for_sound_only_waits_until_voice_end_once) {
         "endglobals\n"
         "function IntroSequenceAction takes nothing returns nothing\n"
         "  call StartSound(introVoice)\n"
-        "  call TriggerSleepAction(3.5)\n"
-        "  call TriggerWaitForSound(introVoice, 0.0)\n"
+        "  call TriggerWaitForSound(introVoice, 10.0)\n"
         "  set introStage = 1\n"
-        "  call TriggerWaitForSound(introVoice, 2.0)\n"
+        "  call TriggerWaitForSound(introVoice, 5.0)\n"
         "  set introStage = 2\n"
+        "  call TriggerWaitForSound(introVoice, 0.0)\n"
+        "  set introStage = 3\n"
+        "  call TriggerWaitForSound(introVoice, 2.0)\n"
+        "  set introStage = 4\n"
         "endfunction\n"
         "function AssertIntroStageZero takes nothing returns nothing\n"
         "  call BJassAssert(introStage == 0, \"dialogue advanced before the voice duration elapsed\")\n"
         "endfunction\n"
         "function AssertIntroStageOne takes nothing returns nothing\n"
-        "  call BJassAssert(introStage == 1, \"positive offset did not preserve the remaining wait\")\n"
+        "  call BJassAssert(introStage == 1, \"first voice offset checkpoint fired at the wrong time\")\n"
+        "endfunction\n"
+        "function AssertIntroStageTwo takes nothing returns nothing\n"
+        "  call BJassAssert(introStage == 2, \"second voice offset checkpoint fired at the wrong time\")\n"
         "endfunction\n"
         "function AssertIntroStageDone takes nothing returns nothing\n"
-        "  call BJassAssert(introStage == 2, \"repeated wait delayed dialogue after voice ended\")\n"
+        "  call BJassAssert(introStage == 4, \"repeated waits extended past the voice end\")\n"
         "endfunction\n"
         "function main takes nothing returns nothing\n"
         "  set introVoice = CreateSound(\"intro.wav\", false, false, false, 0, 0, \"\")\n"
@@ -4773,24 +4779,29 @@ TEST(wc3_api, repeated_wait_for_sound_only_waits_until_voice_end_once) {
     T_EQ(ui_sound_calls, 1);
     T_EQ(level.time, 0u);
 
-    level.time = 3500;
+    level.time = 4999;
     jass_runevents(level.vm);
     jass_callbyname(level.vm, "AssertIntroStageZero", false);
+    T_ASSERT(!jass_rterror_pending(level.vm));
+    level.time = 5000;
+    jass_runevents(level.vm);
+    jass_runevents(level.vm);
+    jass_callbyname(level.vm, "AssertIntroStageOne", false);
+    T_ASSERT(!jass_rterror_pending(level.vm));
+    level.time = 9999;
+    jass_runevents(level.vm);
+    jass_callbyname(level.vm, "AssertIntroStageOne", false);
+    T_ASSERT(!jass_rterror_pending(level.vm));
+    level.time = 10000;
+    jass_runevents(level.vm);
+    jass_runevents(level.vm);
+    jass_callbyname(level.vm, "AssertIntroStageTwo", false);
     T_ASSERT(!jass_rterror_pending(level.vm));
     level.time = 14999;
     jass_runevents(level.vm);
-    jass_callbyname(level.vm, "AssertIntroStageZero", false);
+    jass_callbyname(level.vm, "AssertIntroStageTwo", false);
     T_ASSERT(!jass_rterror_pending(level.vm));
     level.time = 15000;
-    jass_runevents(level.vm);
-    jass_runevents(level.vm);
-    jass_callbyname(level.vm, "AssertIntroStageOne", false);
-    T_ASSERT(!jass_rterror_pending(level.vm));
-    level.time = 16999;
-    jass_runevents(level.vm);
-    jass_callbyname(level.vm, "AssertIntroStageOne", false);
-    T_ASSERT(!jass_rterror_pending(level.vm));
-    level.time = 17000;
     jass_runevents(level.vm);
     jass_runevents(level.vm);
     jass_callbyname(level.vm, "AssertIntroStageDone", false);
