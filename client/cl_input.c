@@ -554,6 +554,8 @@ static keyCode_t CL_SDLKeyToKeyCode(int sym) {
         { SDLK_RIGHT, K_RIGHTARROW },
         { SDLK_PAGEUP, K_PAGEUP },
         { SDLK_PAGEDOWN, K_PAGEDOWN },
+        { SDLK_HOME, K_HOME },
+        { SDLK_END, K_END },
     };
     if (sym >= SDLK_F1 && sym <= SDLK_F12)
         return (keyCode_t)(K_F1 + (sym - SDLK_F1));
@@ -738,8 +740,15 @@ void CL_Input(void) {
                 }
                 /* SDL key-repeat is not a deliberate second press; skip it for
                  * gameplay so held number binds cannot double-tap a control group. */
-                if (cls.key_dest == key_game && event.key.repeat)
+                if (cls.key_dest == key_game && event.key.repeat) {
+                    /* Only the focused transient editor receives repeated key-downs.
+                     * SDL_TEXTINPUT already repeats printable characters; gameplay
+                     * binds and control-group double-taps must not repeat. */
+                    if (CL_WindowTextInputActive())
+                        CL_WindowEditRepeat(CL_SDLKeyToKeyCode(event.key.keysym.sym),
+                                            CL_BindMods(event.key.keysym.mod));
                     break;
+                }
                 if (cls.key_dest == key_game && CL_MinimapKeyEvent(event.key.keysym.sym, event.key.repeat != 0)) {
                     break;
                 }

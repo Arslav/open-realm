@@ -555,6 +555,9 @@ bool UI_BuildFrameForWrite(frameDef_t const *frame,
         case FT_EDITBOX:
         case FT_GLUEEDITBOX:
         case FT_SLASHCHATBOX: {
+            /* The existing frame tint is unused by edit drawing. Reuse it
+             * for optional skin selection colour without changing the wire schema. */
+            out->color = frame->Edit.HighlightColor;
             frameDef_t const *text_frame = frame->Edit.TextFrame[0]
                 ? UI_FindFrameNear(frame, frame->Edit.TextFrame)
                 : NULL;

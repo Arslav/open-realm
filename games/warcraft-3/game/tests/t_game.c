@@ -2373,14 +2373,20 @@ TEST(wc3_game, hud_editbox_serializes_control_identity_and_limit) {
     frame.Edit.BorderSize = 0.004f;
     frame.Edit.TextColor = MAKE(color32_t, 255, 230, 190, 255);
     frame.Edit.CursorColor = COLOR32_WHITE;
+    frame.Edit.HighlightColor = MAKE(color32_t, 77, 88, 99, 210);
     UI_ResetFrameWriteList();
     T_ASSERT(UI_BuildFrameForWrite(&frame, &wire, typedata, sizeof(typedata),
                                    textbuf, sizeof(textbuf)));
+    T_ASSERT(sizeof(uiEditBox_t) <= 255);
     T_EQ(wire.buffer.size, sizeof(uiEditBox_t));
     edit = (uiEditBox_t const *)wire.buffer.data;
     T_STREQ(edit->id, "SaveGameFileEditBox");
     T_EQ(edit->maxChars, 63);
     T_FEQ(edit->borderSize, 0.004f, 0.0001f);
+    T_EQ(wire.color.r, 77);
+    T_EQ(wire.color.g, 88);
+    T_EQ(wire.color.b, 99);
+    T_EQ(wire.color.a, 210);
 }
 
 TEST(wc3_game, hud_listbox_serializes_static_selected_row) {

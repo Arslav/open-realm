@@ -281,6 +281,9 @@ static texture_t *layout_dynamic_pics[MAX_DYNAMIC_IMAGES];
 static char layout_dynamic_pic_names[MAX_DYNAMIC_IMAGES][512];
 static uint32_t layout_dynamic_pic_cursor;
 static bool layout_left_down;
+/* Captured identity is layer+frame, since frame numbers repeat across layers. */
+static uint32_t layout_press_frame, layout_press_layer;
+static uint32_t layout_right_press_frame, layout_right_press_layer;
 static char layout_held_command[CMDARG_LEN * 2];
 static uint32_t layout_hovered_number;
 static uint32_t layout_hovered_layer;
@@ -1169,6 +1172,50 @@ void SCR_LayoutDrawTextArea(uiFrame_t const *frame, rect_t const *screen) {
     re.DrawText(&dt);
 }
 
+/* Use the same font and inset as SCR_LayoutDrawEditBox for pointer selection. */
+uint32_t SCR_LayoutEditCaretAt(uiFrame_t const *frame, cstring_t value, float x) {
+    uiEditBox_t const *edit = frame && frame->buffer.size >= sizeof(uiEditBox_t) ? frame->buffer.data : NULL;
+    uiFrame_t const *text_frame = NULL;
+    uiLabel_t label = { 0 };
+    drawText_t dt;
+    rect_t inner, rect;
+    char prefix[256];
+    float previous = 0.0f, target;
+    size_t len;
+    if (!edit || !value) return 0;
+    FOR_LOOP(i, SCR_NumFrames()) {
+        uiFrame_t const *child = SCR_Frame(i);
+        if (child && child->parent == frame->number &&
+            (child->flags.type == FT_STRING || child->flags.type == FT_TEXT)) {
+            text_frame = child;
+            break;
+        }
+    }
+    if (!text_frame) return 0;
+    inner = Rect_inset(SCR_LayoutRect(frame), MAX(edit->borderSize, 0.0f));
+    rect = MAKE(rect_t, .x = inner.x, .y = SCR_LayoutRect(text_frame)->y,
+                       .w = inner.w, .h = SCR_LayoutRect(text_frame)->h);
+    if (text_frame->buffer.data && text_frame->buffer.size >= sizeof(uiLabel_t))
+        label = *(uiLabel_t const *)text_frame->buffer.data;
+    if (edit->font) label.font = edit->font;
+    dt = SCR_GetDrawText(text_frame, rect.w, value, &label);
+    dt.rect = rect;
+    dt.font = edit->font ? cl.fonts[edit->font] : dt.font;
+    dt.halign = FONT_JUSTIFYLEFT;
+    target = MAX(0.0f, x - rect.x);
+    len = MIN(strlen(value), sizeof(prefix) - 1);
+    for (size_t n = 1; n <= len; n++) {
+        float width;
+        memcpy(prefix, value, n);
+        prefix[n] = '\0';
+        dt.text = prefix;
+        width = re.GetTextSize(&dt).x;
+        if (target < (previous + width) * 0.5f) return (uint32_t)(n - 1);
+        previous = width;
+    }
+    return (uint32_t)len;
+}
+
 void SCR_LayoutDrawEditBox(uiFrame_t const *frame, rect_t const *screen) {
     uiEditBox_t const *edit = frame->buffer.data;
     uiFrame_t const *text_frame = NULL;
@@ -1232,8 +1279,34 @@ void SCR_LayoutDrawEditBox(uiFrame_t const *frame, rect_t const *screen) {
                 (unsigned)label.font, (unsigned)dt.color.r, (unsigned)dt.color.g,
                 (unsigned)dt.color.b, (unsigned)dt.color.a, value);
 
+    /* Draw the selected default save name behind the glyphs. */
+    {
+        uint32_t start, end;
+        size_t len = strlen(value);
+        if (CL_WindowEditSelection(text_frame->number, &start, &end) &&
+            start < end && end <= len && len < 256) {
+            char before[256], selected[256];
+            drawText_t measure = dt;
+            vec2_t prefix_size, selected_size;
+            rect_t highlight = text_rect;
+            memcpy(before, value, start); before[start] = 0;
+            memcpy(selected, value + start, end - start); selected[end - start] = 0;
+            measure.text = before;
+            prefix_size = re.GetTextSize(&measure);
+            measure.text = selected;
+            selected_size = re.GetTextSize(&measure);
+            highlight.x += prefix_size.x;
+            highlight.w = MIN(selected_size.x, MAX(0.0f, text_rect.w - prefix_size.x));
+            if (highlight.w > 0.0f)
+                re.DrawImageEx(&MAKE(drawImage_t,
+                    .texture = NULL, .shader = SHADER_UI, .alphamode = BLEND_MODE_BLEND,
+                    .screen = highlight, .uv = MAKE(rect_t, 0, 0, 1, 1),
+                    .color = frame->color.a ? frame->color : MAKE(color32_t, 120, 120, 120, 255),
+                    .flags = DRAW_CLIP, .clip = text_rect));
+        }
+    }
     re.DrawText(&dt);
-    if (CL_WindowEditCursor(text_frame->number, &cursor) && re.GetTextSize)
+    if (CL_WindowEditCursor(text_frame->number, &cursor))
         M_DrawTextInputCursor(&re, &dt, value, cursor, COLOR32_WHITE);
 }
 
@@ -1599,12 +1672,18 @@ bool SCR_LayoutMouseEvent(layoutMouseEvent_t const *mouse_event) {
      * targeting on the same icon. Consume both right-button edges so the click
      * cannot also become a world Smart order. */
     if (param == SDL_BUTTON_RIGHT) {
-        if (!hovered_frame || hovered_frame->flags.type != FT_COMMANDBUTTON ||
-            !hovered_frame->text || !*hovered_frame->text) {
-            return false;
+        bool const valid = hovered_frame && hovered_frame->flags.type == FT_COMMANDBUTTON &&
+                           hovered_frame->text && *hovered_frame->text;
+        if (event == MENU_MOUSE_DOWN) {
+            layout_right_press_frame = valid ? hovered_frame->number : 0;
+            layout_right_press_layer = valid ? layout_hovered_layer : 0;
+            return valid;
         }
-        if (event == MENU_MOUSE_DOWN) return true;
         if (event != MENU_MOUSE_UP) return false;
+        bool const matched = valid && layout_right_press_frame == hovered_frame->number &&
+                             layout_right_press_layer == layout_hovered_layer;
+        layout_right_press_frame = 0;
+        if (!matched) return false;
         MSG_WriteByte(&cls.netchan.message, clc_stringcmd);
         SZ_Printf(&cls.netchan.message, "%s", hovered_frame->text);
         return true;
@@ -1614,6 +1693,8 @@ bool SCR_LayoutMouseEvent(layoutMouseEvent_t const *mouse_event) {
     if (event == MENU_MOUSE_DOWN) {
         char command[CMDARG_LEN * 2];
         layout_left_down = true;
+        layout_press_frame = hovered_frame ? hovered_frame->number : 0;
+        layout_press_layer = hovered_frame ? layout_hovered_layer : 0;
         /* Multiselect icons are server-authored gameplay controls. They do not
          * have an onclick string, so consume the press here and resolve the
          * concrete entity on release below. */
@@ -1628,6 +1709,9 @@ bool SCR_LayoutMouseEvent(layoutMouseEvent_t const *mouse_event) {
     }
     if (event != MENU_MOUSE_UP) return false;
     layout_left_down = false;
+    bool const matched = hovered_frame && layout_press_frame == hovered_frame->number &&
+                         layout_press_layer == layout_hovered_layer;
+    layout_press_frame = 0;
     if (layout_held_command[0]) {
         char command[sizeof(layout_held_command)];
         strlcpy(command, layout_held_command, sizeof(command));
@@ -1638,16 +1722,17 @@ bool SCR_LayoutMouseEvent(layoutMouseEvent_t const *mouse_event) {
         return false;
     }
 
+    if (!matched) return false;
     FOR_LOOP(layer, MAX_LAYOUT_LAYERS) {
         handle_t layout = layout_layers[layer];
         uint32_t flags = cl.playerstate.uiflags;
         if (modal_layer >= 0 && (int)layer != modal_layer) continue;
-        if (!layout || layer == LAYER_WORLD_HOVER || (1 << layer) & flags) continue;
+        if (!layout || layer != layout_hovered_layer || layer == LAYER_WORLD_HOVER || (1 << layer) & flags) continue;
         SCR_Clear(layout);
         for (uint32_t i = SCR_NumFrames(); i > 0; i--) {
             uiFrame_t const *frame = SCR_Frame(i - 1);
 
-            if (!frame) continue;
+            if (!frame || frame->number != hovered_frame->number) continue;
             if (frame->flags.type == FT_MULTISELECT) {
                 uint32_t entity = SCR_LayoutMultiselectEntityAt(frame, &point);
                 if (entity) {
