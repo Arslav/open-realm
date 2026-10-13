@@ -597,7 +597,7 @@ TEST(net, no_refresh_preserves_client_loop_without_screen_submission) {
 }
 
 static uint32_t test_menu_draws, test_menu_keys;
-static void capture_menu_key(int key, bool down, uint32_t time) { (void)key; (void)down; (void)time; test_menu_keys++; }
+static void capture_menu_key(int key, uint32_t mods, bool down, uint32_t time) { (void)key; (void)mods; (void)down; (void)time; test_menu_keys++; }
 static void capture_menu_refresh(uint32_t time) { (void)time; test_menu_draws++; }
 
 TEST(net, active_game_never_draws_main_menu) {

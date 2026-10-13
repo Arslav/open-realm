@@ -1333,14 +1333,14 @@ bool CL_WindowEditCursor(uint32_t text_frame, uint32_t *cursor) {
 }
 
 /* Selection endpoints for the focused transient edit box. */
-bool CL_WindowEditSelection(uint32_t text_frame, uint32_t *start, uint32_t *end) {
+bool CL_WindowEditSelection(uint32_t text_frame, uint32_t *start, uint32_t *selection_end) {
     clientWindow_t *window = CL_WindowPrepared();
     if (!window || window != cl_windows.edit_window || !text_frame) return false;
     FOR_LOOP(i, window->num_edit_values) {
         clientWindowEdit_t const *value = &window->edit_values[i];
         if (value->frame == cl_windows.edit_frame && value->text_frame == text_frame) {
             if (start) *start = MIN(value->cursor, value->anchor);
-            if (end) *end = MAX(value->cursor, value->anchor);
+            if (selection_end) *selection_end = MAX(value->cursor, value->anchor);
             return value->cursor != value->anchor;
         }
     }

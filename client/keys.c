@@ -132,7 +132,7 @@ void Key_Event(keyCode_t key, uint32_t mods, bool down, uint32_t time) {
 
     /* Forward to UI library if in menu mode */
     if (CL_MenuActive() && cls.key_dest == key_menu && menu.KeyEvent) {
-        menu.KeyEvent(key, down, time);
+        menu.KeyEvent(key, mods, down, time);
         return;
     }
 

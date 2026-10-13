@@ -98,17 +98,16 @@ static void UI_FocusEdit(frameDef_t *frame) {
     }
 }
 
-bool M_EditKey(int key) {
+bool M_EditKey(int key, uint32_t mods) {
     int result;
 
     if (!active_edit) {
         return false;
     }
 
-    SDL_Keymod mods = SDL_GetModState();
     result = M_TextInput_KeyModified(&active_ti, key,
-                                    (mods & KMOD_SHIFT) != 0,
-                                    (mods & KMOD_CTRL) != 0);
+                                    (mods & KEY_MOD_SHIFT) != 0,
+                                    (mods & KEY_MOD_CTRL) != 0);
     switch (result) {
         case MENU_TEXTINPUT_CONSUMED:
             return true;

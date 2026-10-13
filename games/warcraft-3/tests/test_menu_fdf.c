@@ -1539,7 +1539,7 @@ TEST(menu_fdf, gameplay_ignores_stale_glue_hit_test_cache) {
     UI_DrawFrame(root);
     T_ASSERT(UI_HitTest(0.15f, 0.15f) != NULL);
     captured_command[0] = '\0';
-    T_ASSERT(!M_MouseEvent(MENU_MOUSE_UP, 188, 144, 1));
+    T_ASSERT(!M_MouseEvent(MENU_MOUSE_UP, 188, 144, 1, 0));
     T_STREQ(captured_command, "");
 
     M_Shutdown();
@@ -1583,13 +1583,13 @@ TEST(menu_fdf, glue_checkbox_toggles_and_draws_check_highlight) {
 
     test_mouse_pos.x = 130;
     test_mouse_pos.y = 130;
-    M_MouseEvent(MENU_MOUSE_UP, 130, 130, 1);
+    M_MouseEvent(MENU_MOUSE_UP, 130, 130, 1, 0);
     captured_draw_calls = 0;
     UI_DrawFrame(root);
     T_ASSERT(checkbox->CheckBox.Checked);
     T_EQ(captured_draw_calls, 2);
 
-    M_MouseEvent(MENU_MOUSE_UP, 130, 130, 1);
+    M_MouseEvent(MENU_MOUSE_UP, 130, 130, 1, 0);
     captured_draw_calls = 0;
     UI_DrawFrame(root);
     T_ASSERT(!checkbox->CheckBox.Checked);
@@ -1628,7 +1628,7 @@ TEST(menu_fdf, control_map_list_receives_mouse_clicks) {
     /* Populate the layout cache, then click in the first 0.019-high row. */
     UI_DrawFrame(root);
     captured_command[0] = '\0';
-    M_MouseEvent(MENU_MOUSE_UP, 188, 144, 1);
+    M_MouseEvent(MENU_MOUSE_UP, 188, 144, 1, 0);
     T_STREQ(captured_command, "test_map_list_select 0");
 }
 
@@ -1663,7 +1663,7 @@ TEST(menu_fdf, popup_menu_hover_sets_flag_on_middle_row) {
     int px = (int)(mid_x / 0.8f * 1000.0f);
     int py = (int)(mid_y / 0.6f * 750.0f);
 
-    M_MouseEvent(MENU_MOUSE_MOVE, px, py, 0);
+    M_MouseEvent(MENU_MOUSE_MOVE, px, py, 0, 0);
 
     T_ASSERT(popup->ui_flags & UIFLAG_HOVERED);
 }
@@ -1698,7 +1698,7 @@ TEST(menu_fdf, button1_dropdown_backdrop_gets_hover_highlight) {
     test_mouse_pos.x = 130;
     test_mouse_pos.y = 130;
     UI_DrawFrame(root);
-    M_MouseEvent(MENU_MOUSE_MOVE, 130, 130, 0);
+    M_MouseEvent(MENU_MOUSE_MOVE, 130, 130, 0, 0);
     captured_hover_draws = 0;
     UI_DrawFrame(root);
 
@@ -1750,7 +1750,7 @@ TEST(menu_fdf, editbox_without_text_frame_click_focus_accepts_text_input) {
     test_mouse_pos.x = 130;
     test_mouse_pos.y = 130;
     UI_DrawFrame(root);
-    M_MouseEvent(MENU_MOUSE_DOWN, 130, 130, 1);
+    M_MouseEvent(MENU_MOUSE_DOWN, 130, 130, 1, 0);
     captured_draw_calls = 0;
     UI_DrawFrame(root);
 
@@ -1950,7 +1950,7 @@ TEST(menu_fdf, options_game_port_enter_applies_and_blurs) {
     test_mouse_pos.y = 130;
     /* Event hit testing consumes the layout cache built by the preceding draw. */
     UI_DrawFrame(root);
-    M_MouseEvent(MENU_MOUSE_DOWN, 130, 130, 1);
+    M_MouseEvent(MENU_MOUSE_DOWN, 130, 130, 1, 0);
     T_ASSERT(UI_EditHasFocus(editbox));
 
     optionsMenuScreen.key_event(13, true);
@@ -2704,7 +2704,7 @@ TEST(menu_fdf, text_input_respects_menu_activity_and_transition_lock) {
     T_ASSERT(M_IsTransitioning());
     M_TextInput("6");
     menuExport_t api = M_GetAPI(mi);
-    api.KeyEvent(8, true, M_Time());
+    api.KeyEvent(8, 0, true, M_Time());
     T_STREQ(UI_EditValue(edit), "12345");
     test_glue_tick(667);
     test_glue_tick(1000);

@@ -455,14 +455,14 @@ void M_TextInput(cstring_t text) {
     UI_EditTextInput(text);
 }
 
-void M_KeyEvent(int key, bool down, uint32_t time) {
+void M_KeyEvent(int key, uint32_t mods, bool down, uint32_t time) {
     (void)time;
 
     if (!ui_state.active || M_IsTransitioning()) {
         return;
     }
 
-    if (down && M_EditKey(key)) {
+    if (down && M_EditKey(key, mods)) {
         return;
     }
     
@@ -489,7 +489,7 @@ static vec2_t UI_PixelToFdf(int px, int py) {
 }
 
 /* All UI mouse work starts here so draw code only consumes event-updated state. */
-bool M_MouseEvent(menuMouseEvent_t event, int x, int y, int32_t param) {
+bool M_MouseEvent(menuMouseEvent_t event, int x, int y, int32_t param, uint32_t mods) {
     bool const down = event == MENU_MOUSE_DOWN;
     bool const up = event == MENU_MOUSE_UP;
     bool const left = param == 1;
@@ -510,7 +510,7 @@ bool M_MouseEvent(menuMouseEvent_t event, int x, int y, int32_t param) {
     ui_state.mouse_fdf = fdf;
     frameDef_t const *hit = UI_HitTest(fdf.x, fdf.y);
     /* The render module owns edit dragging even after the pointer leaves its frame. */
-    UI_EditDragEvent(event, fdf.x, param);
+    UI_EditDragEvent(event, fdf.x, param, mods);
     if (down && left) {
         menu_pressed_frame = hit;
         menu_popup_pressed = UI_HasActivePopup() && UI_PopupPointInside(fdf.x, fdf.y);
