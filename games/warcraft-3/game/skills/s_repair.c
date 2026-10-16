@@ -501,6 +501,13 @@ static void ai_repair(edict_t *ent) {
         start_hp = MAX(1.0f, hp->max_value * 0.10f);
         hp_gain = (hp->max_value - start_hp) * ((float)FRAMETIME * ratio / duration);
         G_AddHealth(building, hp_gain);
+#ifdef WC3_DEBUG_BUILD
+        fprintf(stderr, "WC3_BUILD repair-progress worker=%ld move=%s primary=%u ratio=%.3f building=%ld id=%.4s progress=%.1f/%.1f health=%.1f/%.1f frame=%u\n",
+                (long)(ent - g_edicts), ent->currentmove && ent->currentmove->animation ? ent->currentmove->animation : "<none>",
+                ent->buildwork->primary, ratio, (long)(building - g_edicts),
+                (cstring_t)&building->class_id, building->construction->progress,
+                duration, hp->value, hp->max_value, building->s.frame);
+#endif
         if (building->construction->progress >= duration) {
             G_CompleteConstruction(building);
             repair_stop_reason(ent, "construction_complete");

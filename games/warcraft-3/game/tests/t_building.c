@@ -37,6 +37,8 @@ static uint16_t building_queue_buildtimer;
 static uint8_t building_queue_numitems;
 static uint32_t building_queue_starttime;
 static uint32_t building_queue_endtime;
+static uint16_t building_queue_item_flags;
+static float building_queue_progress;
 static PATHSTR building_sound_path;
 static uint32_t building_commandbar_layouts;
 static int32_t building_last_byte;
@@ -107,6 +109,8 @@ static void building_queue_capture_write(pfWriteType_t type, void const *value) 
     building_queue_numitems = queue->numitems;
     building_queue_starttime = queue->items[0].starttime;
     building_queue_endtime = queue->items[0].endtime;
+    building_queue_item_flags = queue->items[0].flags;
+    building_queue_progress = queue->items[0].progress;
 }
 
 static void building_test_unicast(edict_t *ent) { (void)ent; }
@@ -3642,34 +3646,104 @@ TEST(wc3_building, human_birth_emission_tracks_active_repair_not_assigned_worker
     building->health.max_value = building->health.value = 1000.0f;
 
     T_ASSERT(G_StartHumanConstruction(worker, building));
-    T_ASSERT(building->s.renderfx & RF_MDX_EMISSION_PAUSED);
+    T_ASSERT(building->s.flags & EF_MDX_EMISSION_PAUSED);
     G_RunConstructionFrame(building);
-    T_ASSERT(building->s.renderfx & RF_MDX_EMISSION_PAUSED);
+    T_ASSERT(building->s.flags & EF_MDX_EMISSION_PAUSED);
 
     T_ASSERT(S_OrderRepair(worker, building, MAKEFOURCC('A','r','e','p')));
     /* The primary Peasant is relocated to the footprint edge. Its work move
      * (not merely a queued/walking Repair order) enables Birth emission. */
     T_ASSERT(S_RepairWorkerAdvancingHumanConstruction(worker, building));
     G_RunConstructionFrame(building);
-    T_ASSERT(!(building->s.renderfx & RF_MDX_EMISSION_PAUSED));
+    T_ASSERT(!(building->s.flags & EF_MDX_EMISSION_PAUSED));
 
     worker->paused = true;
     G_RunConstructionFrame(building);
-    T_ASSERT(building->s.renderfx & RF_MDX_EMISSION_PAUSED);
+    T_ASSERT(building->s.flags & EF_MDX_EMISSION_PAUSED);
     worker->paused = false;
     G_RunConstructionFrame(building);
-    T_ASSERT(!(building->s.renderfx & RF_MDX_EMISSION_PAUSED));
+    T_ASSERT(!(building->s.flags & EF_MDX_EMISSION_PAUSED));
 
     S_CancelRepair(worker); /* a replacement Move/Stop retires this worker */
     unit_stand(worker);
     G_RunConstructionFrame(building);
-    T_ASSERT(building->s.renderfx & RF_MDX_EMISSION_PAUSED);
+    T_ASSERT(building->s.flags & EF_MDX_EMISSION_PAUSED);
     T_ASSERT(S_OrderRepair(worker, building, MAKEFOURCC('A','r','e','p')));
     G_RunConstructionFrame(building);
-    T_ASSERT(!(building->s.renderfx & RF_MDX_EMISSION_PAUSED));
+    T_ASSERT(!(building->s.flags & EF_MDX_EMISSION_PAUSED));
 
     G_StopConstruction(building);
-    T_ASSERT(!(building->s.renderfx & RF_MDX_EMISSION_PAUSED));
+    T_ASSERT(!(building->s.flags & EF_MDX_EMISSION_PAUSED));
+    building_restore_repair_data(old_abilities, rows);
+}
+
+TEST(wc3_building, moving_repair_worker_suspends_human_construction) {
+    UnitAbilities_t abilities = { .abilList = "Arep" };
+    edict_t *worker, *building;
+    slkTestData_t *rows, *old_abilities;
+    vec2_t move_target = { 384.0f, 0.0f };
+    UnitBalance_t building_balance;
+    gameQueueItem_t queue[1];
+    void (*old_write)(pfWriteType_t, void const *) = gi.Write;
+    int (*old_image_index)(cstring_t) = gi.ImageIndex;
+    float progress, health;
+
+    old_abilities = building_install_repair_data(&rows);
+    setup_test_world();
+    ((AbilityData_t *)G_AbilityData(MAKEFOURCC('A','r','e','p')))->level[0].range = 500.0f;
+    worker = alloc_test_unit(MAKEFOURCC('h','p','e','a'), 0, 0);
+    building = alloc_test_unit(MAKEFOURCC('h','b','a','r'), 64, 0);
+    worker->data.UnitAbilities = &abilities;
+    worker->stand = unit_stand;
+    worker->collision = 16.0f;
+    worker->s.player = 0;
+    worker->movetype = MOVETYPE_STEP;
+    worker->unitinfo.MoveSpeed = 190.0f;
+    building->s.player = 0;
+    building->collision = 32.0f;
+    building->svflags |= SVF_MONSTER;
+    building->health.max_value = building->health.value = 1000.0f;
+    building_balance = *building->data.UnitBalance;
+    building_balance.buildTime = 350;
+    building->data.UnitBalance = &building_balance;
+
+    T_ASSERT(G_StartHumanConstruction(worker, building));
+    building->build = building; /* queue self-link drives the selected-building panel */
+    T_ASSERT(S_OrderRepair(worker, building, MAKEFOURCC('A','r','e','p')));
+    T_ASSERT(S_RepairWorkerAdvancingHumanConstruction(worker, building));
+    worker->currentmove->think(worker);
+    T_ASSERT(building->construction->progress > 0.0f);
+    progress = building->construction->progress;
+    health = building->health.value;
+
+    /* Exercise the player-facing Move order path. It must retire the Repair
+     * work move before the worker can tick construction again. */
+    T_ASSERT(G_IssueUnitPointOrder(worker, "move", &move_target, false, 0, 0.0f));
+    T_ASSERT(!S_RepairWorkerAdvancingHumanConstruction(worker, building));
+    T_ASSERT(!worker->buildwork || !worker->buildwork->ability);
+    worker->currentmove->think(worker);
+    G_RunConstructionFrame(building);
+
+    T_FEQ(building->construction->progress, progress, 0.001f);
+    T_FEQ(building->health.value, health, 0.001f);
+    T_ASSERT(building->s.flags & EF_MDX_EMISSION_PAUSED);
+    T_EQ(G_GetBuildQueue(building, queue, 1), 1);
+    T_ASSERT(queue[0].flags & UI_BUILDQUEUE_ITEM_PAUSED);
+    T_FEQ(queue[0].progress, progress / (building_balance.buildTime * 1000.0f), 0.0001f);
+    building_queue_frame_count = 0;
+    gi.Write = building_queue_capture_write;
+    gi.ImageIndex = building_test_image_index;
+    UI_WriteStart(LAYER_INFOPANEL);
+    UI_WriteBuildQueue(building, &game.clients[0]);
+    T_EQ(building_queue_frame_count, 1);
+    T_ASSERT(building_queue_item_flags & UI_BUILDQUEUE_ITEM_PAUSED);
+    T_FEQ(building_queue_progress, progress / (building_balance.buildTime * 1000.0f), 0.0001f);
+    gi.Write = old_write;
+    gi.ImageIndex = old_image_index;
+    level.time += 1000;
+    T_EQ(G_GetBuildQueue(building, queue, 1), 1);
+    T_ASSERT(queue[0].flags & UI_BUILDQUEUE_ITEM_PAUSED);
+    T_FEQ(queue[0].progress, progress / (building_balance.buildTime * 1000.0f), 0.0001f);
     building_restore_repair_data(old_abilities, rows);
 }
 

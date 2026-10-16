@@ -305,6 +305,7 @@ static void V_AddClientEntity(centity_t const *ent) {
     if (ent->current.flags & EF_GROUND_CONFORM) re.flags |= RF_GROUND_CONFORM;
     if (ent->current.flags & EF_GROUND_SURFACE) re.flags |= RF_GROUND_SURFACE;
     if (ent->current.flags & EF_SELECTION_CIRCLE_ON_WATER) re.flags |= RF_SELECTION_CIRCLE_ON_WATER;
+    if (ent->current.flags & EF_MDX_EMISSION_PAUSED) re.flags |= RF_MDX_EMISSION_PAUSED;
     re.radius = ent->current.radius;
     re.ground_offset = ent->current.ground_offset;
     re.ground_snapshot_z = ent->current.origin.z;

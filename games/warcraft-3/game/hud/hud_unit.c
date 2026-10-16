@@ -789,6 +789,17 @@ uint8_t G_GetBuildQueue(edict_t *ent, gameQueueItem_t *queue, uint8_t max_queue)
                 if ((build->revival && build->revival->reviving) && duration > 0) {
                     progress = build->revival->progress / ((float)duration / 1000.0f);
                     progress = MAX(0, MIN(progress, 1));
+                } else if (build->construction && build->construction->type == CONSTRUCTION_HUMAN && duration > 0) {
+                    progress = build->construction->progress / (float)duration;
+                    progress = MAX(0, MIN(progress, 1));
+                    bool working = false;
+                    FOR_LOOP(worker_index, globals.num_edicts) {
+                        if (S_RepairWorkerAdvancingHumanConstruction(&g_edicts[worker_index], build)) {
+                            working = true;
+                            break;
+                        }
+                    }
+                    if (!working) queue[count].flags |= UI_BUILDQUEUE_ITEM_PAUSED;
                 } else if (build->health.max_value > 0) {
                     progress = build->health.value / build->health.max_value;
                     progress = MAX(0, MIN(progress, 1));
@@ -813,6 +824,17 @@ uint8_t G_GetBuildQueue(edict_t *ent, gameQueueItem_t *queue, uint8_t max_queue)
             queue[count].starttime = cursor;
             queue[count].endtime = cursor;
         }
+        queue[count].progress = MAX(0.0f, MIN(progress, 1.0f));
+#ifdef WC3_DEBUG_BUILD
+        if (count == 0 && build->construction && build->construction->type == CONSTRUCTION_HUMAN) {
+            fprintf(stderr, "WC3_BUILD queue-progress producer=%ld building=%ld id=%.4s construction_paused=%u progress=%.1f health=%.1f/%.1f fraction=%.4f duration_ms=%u queue_start=%u queue_end=%u frame=%u\n",
+                    (long)(ent - g_edicts), (long)(build - g_edicts),
+                    (cstring_t)&build->class_id, build->construction->paused,
+                    build->construction->progress, build->health.value,
+                    build->health.max_value, progress, duration,
+                    queue[count].starttime, queue[count].endtime, build->s.frame);
+        }
+#endif
         count++;
         if (((build->revival && build->revival->reviving) && build->revival->queue_next == build) ||
             (!(build->revival && build->revival->reviving) && build->build == build)) {
