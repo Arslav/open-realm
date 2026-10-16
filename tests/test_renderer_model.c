@@ -455,6 +455,62 @@ TEST(renderer_model, mdx_global_sequence_uses_first_key_when_duration_precedes_i
     T_FEQ(value.w, authored.w, 0.001f);
 }
 
+TEST(renderer_model, mdx_global_sequence_holds_per_entity_and_resumes_without_jumping) {
+    uint8_t storage[sizeof(mdxKeyTrack_t) + 2 * (sizeof(int) + sizeof(float))] = { 0 };
+    mdxKeyTrack_t *track = (mdxKeyTrack_t *)storage;
+    mdxGlobalSequence_t global = { .value = 1000 };
+    mdxModel_t model = { .globalSequences = &global, .num_globalSequences = 1 };
+    renderEntity_t entity = { .number = MAX_GAME_ENTITIES - 1, .generation = 0x574333u };
+    mdxKeyFrame_t *first = (mdxKeyFrame_t *)track->values;
+    mdxKeyFrame_t *last = (mdxKeyFrame_t *)((uint8_t *)track->values + sizeof(int) + sizeof(float));
+    uint32_t const old_time = tr.viewDef.time;
+    float const values[2] = { 0.0f, 10.0f };
+    float value = 0.0f;
+    mdxAnimationTimeScope_t scope;
+
+    track->keyframeCount = 2;
+    track->datatype = TDATA_FLOAT1;
+    track->linetype = TRACK_LINEAR;
+    track->globalSeqId = 0;
+    first->time = 0;
+    last->time = 1000;
+    memcpy(first->data, &values[0], sizeof(values[0]));
+    memcpy(last->data, &values[1], sizeof(values[1]));
+
+    tr.viewDef.time = 400;
+    MDLX_PushEntityAnimationTime(&entity, &scope);
+    MDLX_GetModelKeytrackValue(&model, track, 0, &value);
+    MDLX_PopEntityAnimationTime(&scope);
+    T_FEQ(value, 4.0f, 0.001f);
+
+    entity.flags |= RF_MDX_ANIMATION_PAUSED;
+    tr.viewDef.time = 800;
+    MDLX_PushEntityAnimationTime(&entity, &scope);
+    MDLX_GetModelKeytrackValue(&model, track, 0, &value);
+    MDLX_PopEntityAnimationTime(&scope);
+    T_FEQ(value, 8.0f, 0.001f);
+
+    tr.viewDef.time = 900;
+    MDLX_PushEntityAnimationTime(&entity, &scope);
+    MDLX_GetModelKeytrackValue(&model, track, 0, &value);
+    MDLX_PopEntityAnimationTime(&scope);
+    T_FEQ(value, 8.0f, 0.001f);
+
+    entity.flags &= ~RF_MDX_ANIMATION_PAUSED;
+    tr.viewDef.time = 1200;
+    MDLX_PushEntityAnimationTime(&entity, &scope);
+    MDLX_GetModelKeytrackValue(&model, track, 0, &value);
+    MDLX_PopEntityAnimationTime(&scope);
+    T_FEQ(value, 8.0f, 0.001f); /* no phase jump on resume */
+
+    tr.viewDef.time = 1300;
+    MDLX_PushEntityAnimationTime(&entity, &scope);
+    MDLX_GetModelKeytrackValue(&model, track, 0, &value);
+    MDLX_PopEntityAnimationTime(&scope);
+    T_FEQ(value, 9.0f, 0.001f);
+    tr.viewDef.time = old_time;
+}
+
 TEST(renderer_model, mdx_sequence_zero_clock_wraps_with_render_time) {
     uint32_t old_time = tr.viewDef.time;
     mdxSequence_t seq = { .interval = { 100, 1100 } };

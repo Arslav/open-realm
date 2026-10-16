@@ -654,14 +654,16 @@ A unit death may award gold/lumber to the killer's owner when the victim's owner
 
 Human construction progress is driven by Peasants executing the active Repair
 work move. A Peasant walking toward a site does not advance construction.
-The game publishes `RF_MDX_EMISSION_PAUSED` on the unfinished building while
-no live, unpaused Peasant is actually working. The MDX renderer suppresses
-**new** particles for that entity; existing particles finish their lifetimes.
-When a worker begins work the bit clears, and it sets again when the final
-worker moves away, stops, dies, or is paused. More than one working Peasant
-keeps emission active until the last one stops. Completion/cancellation clears
-the temporary rendering state. This does not pause global sequences or effects
-whose normal Stand animation loops.
+The game publishes emission-pause and animation-pause flags on the unfinished
+building while no live, unpaused Peasant is actually working. The MDX renderer
+suppresses **new** particles for that entity; existing particles finish their
+lifetimes. It also freezes that entity's global-sequence tracks, including
+tracks on construction models such as the Farm's moving saw. The renderer
+removes paused time from the entity's global-sequence clock on resume, so the
+track continues from the same phase. When a worker begins work the flags clear,
+and they set again when the final worker moves away, stops, dies, or is paused.
+More than one working Peasant keeps emission and animation active until the
+last one stops. Completion/cancellation clears the temporary rendering state.
 
 Non-looping doodad and destructable sequences independently stop emitting PRE2
 particles on their final held frame, without requiring gameplay-specific gate

@@ -1643,8 +1643,11 @@ static bool G_StartConstruction(edict_t *builder, edict_t *building, constructio
     building->aiflags |= AI_HOLD_FRAME;
     /* Human Birth emission starts only when a Peasant begins actually working.
      * Orc/Undead/Night Elf buildings still use their autonomous clocks. */
-    if (type == CONSTRUCTION_HUMAN) building->s.flags |= EF_MDX_EMISSION_PAUSED;
-    else building->s.flags &= ~EF_MDX_EMISSION_PAUSED;
+    if (type == CONSTRUCTION_HUMAN) {
+        building->s.flags |= EF_MDX_EMISSION_PAUSED | EF_MDX_ANIMATION_PAUSED;
+    } else {
+        building->s.flags &= ~(EF_MDX_EMISSION_PAUSED | EF_MDX_ANIMATION_PAUSED);
+    }
     G_SetHealth(building, MAX(1.0f, hp->max_value * WC3_BUILD_START_LIFE));
     G_SetConstructionLoopSound(building, true);
 
@@ -1796,6 +1799,7 @@ static void G_UpdateHumanConstructionEmitterState(edict_t *building) {
     bool working = false;
     bool const was_paused = (building->s.flags & EF_MDX_EMISSION_PAUSED) != 0;
 #ifdef WC3_DEBUG_BUILD
+    static uint32_t last_status_log[MAX_ENTITIES];
     edict_t const *working_worker = NULL;
 #endif
 
@@ -1812,8 +1816,8 @@ static void G_UpdateHumanConstructionEmitterState(edict_t *building) {
             }
         }
     }
-    if (working) building->s.flags &= ~EF_MDX_EMISSION_PAUSED;
-    else building->s.flags |= EF_MDX_EMISSION_PAUSED;
+    if (working) building->s.flags &= ~(EF_MDX_EMISSION_PAUSED | EF_MDX_ANIMATION_PAUSED);
+    else building->s.flags |= EF_MDX_EMISSION_PAUSED | EF_MDX_ANIMATION_PAUSED;
 #ifdef WC3_DEBUG_BUILD
     if (was_paused != !working) {
         fprintf(stderr, "WC3_BUILD emitter building=%ld id=%.4s paused=%u->%u worker=%ld progress=%.1f health=%.1f/%.1f frame=%u build=%ld\n",
@@ -1823,6 +1827,25 @@ static void G_UpdateHumanConstructionEmitterState(edict_t *building) {
                 building->construction->progress, building->health.value,
                 building->health.max_value, building->s.frame,
                 building->build ? (long)(building->build - g_edicts) : -1L);
+    }
+    if (!working) {
+        uint32_t const number = (uint32_t)(building - g_edicts);
+        uint32_t const now = (uint32_t)G_Time();
+        if (number < MAX_ENTITIES &&
+            (!last_status_log[number] || now < last_status_log[number] ||
+             now - last_status_log[number] >= 1000)) {
+            animation_t const *anim = building->animation;
+            last_status_log[number] = now;
+            fprintf(stderr, "WC3_BUILD paused-status building=%u id=%.4s time=%u progress=%.1f duration=%.1f health=%.1f/%.1f frame=%u anim=%s range=%u-%u flags=0x%08x worker=%ld build=%ld\n",
+                    number, (cstring_t)&building->class_id, now,
+                    building->construction->progress, building->construction->duration_ms,
+                    building->health.value, building->health.max_value, building->s.frame,
+                    anim && anim->name[0] ? anim->name : "<none>",
+                    anim ? anim->interval[0] : 0, anim ? anim->interval[1] : 0,
+                    building->s.flags,
+                    building->construction->worker ? (long)(building->construction->worker - g_edicts) : -1L,
+                    building->build ? (long)(building->build - g_edicts) : -1L);
+        }
     }
 #endif
     if (was_paused != !working) G_InvalidateUnitInfoPanel(building);
@@ -1897,7 +1920,7 @@ void G_StopConstruction(edict_t *building) {
     G_SetConstructionLoopSound(building, false);
     G_FreeConstruction(building);
     building->aiflags &= ~AI_HOLD_FRAME;
-    building->s.flags &= ~EF_MDX_EMISSION_PAUSED;
+    building->s.flags &= ~(EF_MDX_EMISSION_PAUSED | EF_MDX_ANIMATION_PAUSED);
 }
 
 static int32_t G_ConstructionCancelRefund(int32_t paid) {
@@ -1976,7 +1999,7 @@ void G_CompleteConstruction(edict_t *building) {
     G_SetConstructionLoopSound(building, false);
     G_FreeConstruction(building);
     building->aiflags &= ~AI_HOLD_FRAME;
-    building->s.flags &= ~EF_MDX_EMISSION_PAUSED;
+    building->s.flags &= ~(EF_MDX_EMISSION_PAUSED | EF_MDX_ANIMATION_PAUSED);
     if (building->build == building) building->build = NULL;
     G_SetHealth(building, building->health.max_value);
 	/* A Birth construction site is walk-through in retail.  Its authored

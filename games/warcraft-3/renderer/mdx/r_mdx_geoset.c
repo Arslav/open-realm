@@ -821,6 +821,9 @@ void MDX_RenderModel(renderEntity_t const *entity,
         remappedEntity.oldframe = MDLX_RemapAnimation(model, remappedEntity.oldframe, "Gold");
         entity = &remappedEntity;
     }
+
+    mdxAnimationTimeScope_t animation_time_scope;
+    MDLX_PushEntityAnimationTime(entity, &animation_time_scope);
     
     modelProg_t *shader = mdlx.shader;
     mat3_t normalMatrix;
@@ -929,4 +932,5 @@ void MDX_RenderModel(renderEntity_t const *entity,
         R_Call(glBindTexture, GL_TEXTURE_2D, R_GetFogOfWarTexture());
         R_Call(glActiveTexture, GL_TEXTURE0);
     }
+    MDLX_PopEntityAnimationTime(&animation_time_scope);
 }

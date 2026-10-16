@@ -3647,6 +3647,7 @@ TEST(wc3_building, human_birth_emission_tracks_active_repair_not_assigned_worker
 
     T_ASSERT(G_StartHumanConstruction(worker, building));
     T_ASSERT(building->s.flags & EF_MDX_EMISSION_PAUSED);
+    T_ASSERT(building->s.flags & EF_MDX_ANIMATION_PAUSED);
     G_RunConstructionFrame(building);
     T_ASSERT(building->s.flags & EF_MDX_EMISSION_PAUSED);
 
@@ -3656,24 +3657,30 @@ TEST(wc3_building, human_birth_emission_tracks_active_repair_not_assigned_worker
     T_ASSERT(S_RepairWorkerAdvancingHumanConstruction(worker, building));
     G_RunConstructionFrame(building);
     T_ASSERT(!(building->s.flags & EF_MDX_EMISSION_PAUSED));
+    T_ASSERT(!(building->s.flags & EF_MDX_ANIMATION_PAUSED));
 
     worker->paused = true;
     G_RunConstructionFrame(building);
     T_ASSERT(building->s.flags & EF_MDX_EMISSION_PAUSED);
+    T_ASSERT(building->s.flags & EF_MDX_ANIMATION_PAUSED);
     worker->paused = false;
     G_RunConstructionFrame(building);
     T_ASSERT(!(building->s.flags & EF_MDX_EMISSION_PAUSED));
+    T_ASSERT(!(building->s.flags & EF_MDX_ANIMATION_PAUSED));
 
     S_CancelRepair(worker); /* a replacement Move/Stop retires this worker */
     unit_stand(worker);
     G_RunConstructionFrame(building);
     T_ASSERT(building->s.flags & EF_MDX_EMISSION_PAUSED);
+    T_ASSERT(building->s.flags & EF_MDX_ANIMATION_PAUSED);
     T_ASSERT(S_OrderRepair(worker, building, MAKEFOURCC('A','r','e','p')));
     G_RunConstructionFrame(building);
     T_ASSERT(!(building->s.flags & EF_MDX_EMISSION_PAUSED));
+    T_ASSERT(!(building->s.flags & EF_MDX_ANIMATION_PAUSED));
 
     G_StopConstruction(building);
     T_ASSERT(!(building->s.flags & EF_MDX_EMISSION_PAUSED));
+    T_ASSERT(!(building->s.flags & EF_MDX_ANIMATION_PAUSED));
     building_restore_repair_data(old_abilities, rows);
 }
 
