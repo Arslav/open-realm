@@ -621,6 +621,65 @@ TEST(renderer_model, mdx_ui_particles_preserve_pivot_sizes_and_both_quads) {
     tr.viewDef = saved;
 }
 
+/* A gate's non-looping Open sequence must not indefinitely respawn PRE2
+ * particles after it holds its final frame. Looping Stand effects still work. */
+TEST(renderer_model, mdx_one_shot_emitter_stops_only_after_final_frame_is_held) {
+    mdxParticleEmitter_t emitter = { .node.node_id = 0, .LifeSpan = 1,
+        .EmissionRate = 50, .Speed = 1, .Alpha = {255, 255, 255},
+        .ParticleScaling = {1, 1, 1}, .SegmentColor = {1,1,1, 1,1,1, 1,1,1},
+        .Rows = 1, .Columns = 1 };
+    mdxSequence_t sequences[2] = {
+        { .name = "Open", .interval = {100, 500}, .flags = 1 },
+        { .name = "Stand", .interval = {500, 900}, .flags = 0 },
+    };
+    mdxModel_t model = { .emitters = &emitter, .sequences = sequences, .num_sequences = 2 };
+    renderEntity_t entity = { .frame = 499, .oldframe = 499 };
+    viewDef_t saved = tr.viewDef;
+    mat4_t matrix;
+
+    Matrix4_identity(&matrix); Matrix4_identity(&node_matrices[0]);
+    tr.viewDef.deltaTime = 20;
+    emit_count = 0;
+    MDLX_RenderParticleEmitters(&entity, &model, &matrix);
+    T_EQ(emit_count, 0); /* Open has ended */
+
+    entity.oldframe = 450; /* transitional sample still permits its final burst */
+    MDLX_RenderParticleEmitters(&entity, &model, &matrix);
+    T_EQ(emit_count, 1);
+
+    entity.oldframe = entity.frame = 899; /* Stand is looping, despite a held sample */
+    MDLX_RenderParticleEmitters(&entity, &model, &matrix);
+    T_EQ(emit_count, 2);
+    tr.viewDef = saved;
+}
+
+TEST(renderer_model, mdx_paused_worker_construction_does_not_spawn_particles) {
+    mdxParticleEmitter_t emitter = { .node.node_id = 0, .LifeSpan = 1,
+        .EmissionRate = 50, .Speed = 1, .Alpha = {255, 255, 255},
+        .ParticleScaling = {1, 1, 1}, .SegmentColor = {1,1,1, 1,1,1, 1,1,1},
+        .Rows = 1, .Columns = 1 };
+    mdxSequence_t sequence = { .name = "Birth", .interval = {100, 2000}, .flags = 1 };
+    mdxModel_t model = { .emitters = &emitter, .sequences = &sequence, .num_sequences = 1 };
+    renderEntity_t entity = { .frame = 900, .oldframe = 900,
+                               .flags = RF_BUILDING | RF_MDX_EMISSION_PAUSED };
+    viewDef_t saved = tr.viewDef;
+    mat4_t matrix;
+
+    Matrix4_identity(&matrix); Matrix4_identity(&node_matrices[0]);
+    tr.viewDef.deltaTime = 20;
+    emit_count = 0;
+    MDLX_RenderParticleEmitters(&entity, &model, &matrix);
+    T_EQ(emit_count, 0);
+
+    entity.flags &= ~RF_MDX_EMISSION_PAUSED;
+    MDLX_RenderParticleEmitters(&entity, &model, &matrix);
+    T_EQ(emit_count, 1); /* worker resumed: same Birth frame can emit again */
+    entity.flags |= RF_MDX_EMISSION_PAUSED;
+    MDLX_RenderParticleEmitters(&entity, &model, &matrix);
+    T_EQ(emit_count, 1);
+    tr.viewDef = saved;
+}
+
 TEST(renderer_model, mdx_particle_velocity_follows_emitter_node_rotation) {
     mdxParticleEmitter_t emitter = { .node.node_id = 0, .LifeSpan = 1, .EmissionRate = 628,
         .Speed = 10, .FrameFlags = BZ_MDX_PARTICLE_TAIL, .TailLength = 0.5f,

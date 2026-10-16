@@ -1632,6 +1632,10 @@ static bool G_StartConstruction(edict_t *builder, edict_t *building, constructio
     building->construction->gold = 0;
     building->construction->lumber = 0;
     building->aiflags |= AI_HOLD_FRAME;
+    /* Human Birth emission starts only when a Peasant begins actually working.
+     * Orc/Undead/Night Elf buildings still use their autonomous clocks. */
+    if (type == CONSTRUCTION_HUMAN) building->s.renderfx |= RF_MDX_EMISSION_PAUSED;
+    else building->s.renderfx &= ~RF_MDX_EMISSION_PAUSED;
     G_SetHealth(building, MAX(1.0f, hp->max_value * WC3_BUILD_START_LIFE));
     G_SetConstructionLoopSound(building, true);
 
@@ -1776,12 +1780,33 @@ static void G_ReleaseConstructionWorker(edict_t *building, bool completed) {
     if (worker->stand) worker->stand(worker);
 }
 
+/* The Peasant's work move owns Human construction, not the building's timer.
+ * Publish whether any worker is *actually working* so render particles cannot
+ * continue on a held Birth frame after the final Peasant moves away. */
+static void G_UpdateHumanConstructionEmitterState(edict_t *building) {
+    bool working = false;
+
+    if (building->construction->type != CONSTRUCTION_HUMAN) return;
+    if (!building->paused) {
+        FOR_LOOP(i, globals.num_edicts) {
+            edict_t const *worker = &g_edicts[i];
+            if (S_RepairWorkerAdvancingHumanConstruction(worker, building)) {
+                working = true;
+                break;
+            }
+        }
+    }
+    if (working) building->s.renderfx &= ~RF_MDX_EMISSION_PAUSED;
+    else building->s.renderfx |= RF_MDX_EMISSION_PAUSED;
+}
+
 void G_RunConstructionFrame(edict_t *building) {
     float duration, hp_gain;
     edictStat_s *hp;
 
-    if (!building || !building->construction || building->paused ||
-        !building->data.UnitBalance) return;
+    if (!building || !building->construction) return;
+    G_UpdateHumanConstructionEmitterState(building);
+    if (building->paused || !building->data.UnitBalance) return;
 
     duration = MAX(1.0f, building->construction->duration_ms > 0 ?
                    building->construction->duration_ms : (float)building->data.UnitBalance->buildTime * 1000.0f);
@@ -1844,6 +1869,7 @@ void G_StopConstruction(edict_t *building) {
     G_SetConstructionLoopSound(building, false);
     G_FreeConstruction(building);
     building->aiflags &= ~AI_HOLD_FRAME;
+    building->s.renderfx &= ~RF_MDX_EMISSION_PAUSED;
 }
 
 static int32_t G_ConstructionCancelRefund(int32_t paid) {
@@ -1922,6 +1948,7 @@ void G_CompleteConstruction(edict_t *building) {
     G_SetConstructionLoopSound(building, false);
     G_FreeConstruction(building);
     building->aiflags &= ~AI_HOLD_FRAME;
+    building->s.renderfx &= ~RF_MDX_EMISSION_PAUSED;
     if (building->build == building) building->build = NULL;
     G_SetHealth(building, building->health.max_value);
 	/* A Birth construction site is walk-through in retail.  Its authored

@@ -3621,6 +3621,58 @@ TEST(wc3_building, human_construction_start_sets_explicit_state_and_start_life) 
     T_FEQ(building->health.value, 100.0f, 0.001f);
 }
 
+TEST(wc3_building, human_birth_emission_tracks_active_repair_not_assigned_workers) {
+    UnitAbilities_t abilities = { .abilList = "Arep" };
+    edict_t *worker, *building;
+    slkTestData_t *rows, *old_abilities;
+
+    old_abilities = building_install_repair_data(&rows);
+    setup_test_world();
+    /* Ensure the primary starts in work range after the footprint relocation. */
+    ((AbilityData_t *)G_AbilityData(MAKEFOURCC('A','r','e','p')))->level[0].range = 500.0f;
+    worker = alloc_test_unit(MAKEFOURCC('h','p','e','a'), 0, 0);
+    building = alloc_test_unit(MAKEFOURCC('h','b','a','r'), 64, 0);
+    worker->data.UnitAbilities = &abilities;
+    worker->stand = unit_stand;
+    worker->collision = 16.0f;
+    worker->s.player = 0;
+    building->s.player = 0;
+    building->collision = 32.0f;
+    building->svflags |= SVF_MONSTER;
+    building->health.max_value = building->health.value = 1000.0f;
+
+    T_ASSERT(G_StartHumanConstruction(worker, building));
+    T_ASSERT(building->s.renderfx & RF_MDX_EMISSION_PAUSED);
+    G_RunConstructionFrame(building);
+    T_ASSERT(building->s.renderfx & RF_MDX_EMISSION_PAUSED);
+
+    T_ASSERT(S_OrderRepair(worker, building, MAKEFOURCC('A','r','e','p')));
+    /* The primary Peasant is relocated to the footprint edge. Its work move
+     * (not merely a queued/walking Repair order) enables Birth emission. */
+    T_ASSERT(S_RepairWorkerAdvancingHumanConstruction(worker, building));
+    G_RunConstructionFrame(building);
+    T_ASSERT(!(building->s.renderfx & RF_MDX_EMISSION_PAUSED));
+
+    worker->paused = true;
+    G_RunConstructionFrame(building);
+    T_ASSERT(building->s.renderfx & RF_MDX_EMISSION_PAUSED);
+    worker->paused = false;
+    G_RunConstructionFrame(building);
+    T_ASSERT(!(building->s.renderfx & RF_MDX_EMISSION_PAUSED));
+
+    S_CancelRepair(worker); /* a replacement Move/Stop retires this worker */
+    unit_stand(worker);
+    G_RunConstructionFrame(building);
+    T_ASSERT(building->s.renderfx & RF_MDX_EMISSION_PAUSED);
+    T_ASSERT(S_OrderRepair(worker, building, MAKEFOURCC('A','r','e','p')));
+    G_RunConstructionFrame(building);
+    T_ASSERT(!(building->s.renderfx & RF_MDX_EMISSION_PAUSED));
+
+    G_StopConstruction(building);
+    T_ASSERT(!(building->s.renderfx & RF_MDX_EMISSION_PAUSED));
+    building_restore_repair_data(old_abilities, rows);
+}
+
 TEST(wc3_building, construction_sound_label_drives_snapshot_loop_until_stop) {
     static cstring_t const slk =
         "ID;PWXL;N;E\n"

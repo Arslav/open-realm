@@ -586,6 +586,17 @@ static umove_t repair_generic_move_walk = { "walk", ai_repair_walk, NULL, CAbili
 static umove_t repair_generic_move_work = { "stand work", ai_repair, NULL, CAbilityRepairGeneric };
 static umove_t repair_legacy_move_work = { "stand work", ai_repair_legacy, NULL, CAbilityRepair };
 
+/* Renderer presentation must follow actual Repair work, not an assigned or
+ * approaching worker. An unfinished Human building can have several workers;
+ * only a live worker executing the work move contributes progress. */
+bool S_RepairWorkerAdvancingHumanConstruction(edict_t const *worker, edict_t const *building) {
+    return worker && building && worker->inuse && !worker->paused &&
+           G_UnitIsWorldActive(worker) && !(worker->svflags & SVF_DEADMONSTER) &&
+           worker->health.value > 0.0f && worker->build == building &&
+           worker->buildwork && worker->buildwork->ability &&
+           worker->currentmove == &repair_move_work;
+}
+
 static bool repair_begin(edict_t *ent, edict_t *building, uint32_t code, bool primary) {
     vec2_t origin;
     float angle;

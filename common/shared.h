@@ -204,6 +204,7 @@ enum {
     FLAG(RF_ALLIED, 25),         /* recipient-relative ally; prioritize after the local player's units */
     FLAG(RF_SELECTION_CIRCLE_ON_WATER, 26), /* draw this entity's ground overlays over supported water */
     FLAG(RF_GROUND_SURFACE_SUPPORT, 27), /* WC3 renderer found a walkable destructable under this entity */
+    FLAG(RF_MDX_EMISSION_PAUSED, 28), /* authored one-shot/worker-driven effects must not spawn new particles */
 };
 
 enum {
