@@ -106,13 +106,8 @@ static uint32_t entity_global_time;
  * keep per-entity global tracks (for example a Farm's globally animated saw)
  * at their current phase. Subtract accumulated paused time on resume so the
  * track continues from that phase instead of jumping forward. */
-void MDLX_PushEntityAnimationTime(renderEntity_t const *entity, mdxAnimationTimeScope_t *scope) {
+void MDLX_UpdateEntityAnimationPause(renderEntity_t const *entity) {
     uint32_t now = tr.viewDef.time ? tr.viewDef.time : SDL_GetTicks();
-    uint32_t effective = now;
-
-    if (!scope) return;
-    scope->previous_valid = entity_global_time_valid;
-    scope->previous_time = entity_global_time;
     if (entity && entity->number < MAX_GAME_ENTITIES) {
         mdxGlobalSequencePauseState_t *state = &global_sequence_pause[entity->number];
         bool const paused = (entity->flags & RF_MDX_ANIMATION_PAUSED) != 0;
@@ -133,6 +128,18 @@ void MDLX_PushEntityAnimationTime(renderEntity_t const *entity, mdxAnimationTime
                 state->paused = false;
             }
         }
+    }
+}
+
+void MDLX_PushEntityAnimationTime(renderEntity_t const *entity, mdxAnimationTimeScope_t *scope) {
+    uint32_t now = tr.viewDef.time ? tr.viewDef.time : SDL_GetTicks();
+    uint32_t effective = now;
+    if (!scope) return;
+    scope->previous_valid = entity_global_time_valid;
+    scope->previous_time = entity_global_time;
+    MDLX_UpdateEntityAnimationPause(entity);
+    if (entity && entity->number < MAX_GAME_ENTITIES) {
+        mdxGlobalSequencePauseState_t const *state = &global_sequence_pause[entity->number];
         effective = state->paused ? state->pause_start - state->paused_total : now - state->paused_total;
     }
     entity_global_time = effective;
