@@ -131,7 +131,7 @@ static cstring_t building_all_cvar(cstring_t name, cstring_t fallback) {
 
 static const char building_repair_slk[] =
     "ID;PWXL;N;E\n"
-    "B;X9;Y4;D0\n"
+    "B;X9;Y5;D0\n"
     "C;X1;Y1;K\"alias\"\n"
     "C;X2;K\"code\"\n"
     "C;X3;K\"DataA1\"\n"
@@ -168,6 +168,15 @@ static const char building_repair_slk[] =
     "C;X7;K0\n"
     "C;X8;K96\n"
     "C;X9;K\"ground,structure,friend\"\n"
+    "C;X1;Y5;K\"Ahrp\"\n"
+    "C;X2;K\"Arep\"\n"
+    "C;X3;K0.35\n"
+    "C;X4;K1.5\n"
+    "C;X5;K0\n"
+    "C;X6;K0.15\n"
+    "C;X7;K0\n"
+    "C;X8;K50\n"
+    "C;X9;K\"ground,structure,friend,mechanical,nonancient\"\n"
     "E\n";
 
 static cstring_t const building_repair_stock_targets =
@@ -4848,6 +4857,72 @@ TEST(wc3_building, completed_repair_uses_repair_time_ratios_and_fractional_costs
     building_restore_repair_data(old_abilities, rows);
 }
 
+TEST(wc3_building, roc_peasant_aliased_repair_order_repairs_damaged_structure) {
+    static char const roc_repair_slk[] =
+        "ID;PWXL;N;E\n"
+        "B;X23;Y2;D0\n"
+        "C;X1;Y1;K\"alias\"\nC;X2;K\"code\"\nC;X3;K\"uberAlias\"\n"
+        "C;X4;K\"comments\"\nC;X5;K\"useInEditor\"\nC;X6;K\"hero\"\n"
+        "C;X7;K\"item\"\nC;X8;K\"sort\"\nC;X9;K\"checkDep\"\n"
+        "C;X10;K\"levels\"\nC;X11;K\"reqLevel\"\nC;X12;K\"targs\"\n"
+        "C;X13;K\"Cast1\"\nC;X14;K\"Dur1\"\nC;X15;K\"HeroDur1\"\n"
+        "C;X16;K\"Cool1\"\nC;X17;K\"Cost1\"\nC;X18;K\"Area1\"\n"
+        "C;X19;K\"Rng1\"\nC;X20;K\"Data11\"\nC;X21;K\"Data12\"\n"
+        "C;X22;K\"Data13\"\nC;X23;K\"Data14\"\n"
+        "C;X1;Y2;K\"Ahrp\"\nC;X2;K\"Arep\"\nC;X3;K\"Arep\"\n"
+        "C;X4;K\"Repair (Human)\"\nC;X5;K1\nC;X6;K0\nC;X7;K0\n"
+        "C;X8;K\"unit\"\nC;X9;K1\nC;X10;K1\nC;X11;K0\n"
+        "C;X12;K\"mechanical,friend,nonancient\"\nC;X13;K0\nC;X14;K0\n"
+        "C;X15;K0\nC;X16;K0\nC;X17;K0\nC;X18;K0\nC;X19;K50\n"
+        "C;X20;K0.35\nC;X21;K1.5\nC;X22;K0\nC;X23;K0.15\n"
+        "E\n";
+    gameClient_t *client = &game.clients[0];
+    edict_t *worker;
+    edict_t *building;
+    UnitAbilities_t abilities = { .abilList = "Ahrp" };
+    UnitBalance_t balance;
+    gameClient_t *saved_client;
+    slkTestData_t *rows = parse_slk_string(roc_repair_slk);
+    slkTestData_t *old_abilities = G_SetSLKRows("AbilityData", rows);
+
+    setup_test_world();
+    worker = alloc_test_unit(MAKEFOURCC('h','p','e','a'), 0, 0);
+    building = alloc_test_unit(MAKEFOURCC('h','b','a','r'), 64, 0);
+    worker->data.UnitAbilities = &abilities;
+    worker->collision = 16.0f;
+    building->collision = 32.0f;
+    worker->s.player = client->ps.number;
+    building->s.player = client->ps.number;
+    balance = *building->data.UnitBalance;
+    balance.reptm = 10;
+    balance.buildTime = 100;
+    balance.goldRep = 5;
+    balance.lumberRep = 3;
+    building->data.UnitBalance = &balance;
+    building->health.max_value = 1000.0f;
+    building->health.value = 500.0f;
+    building->svflags |= SVF_MONSTER;
+    client->ps.stats[PLAYERSTATE_RESOURCE_GOLD] = 100;
+    client->ps.stats[PLAYERSTATE_RESOURCE_LUMBER] = 100;
+
+    T_ASSERT(G_UnitHasHumanRepair(worker));
+    T_FEQ(G_AbilityData(MAKEFOURCC('A','h','r','p'))->level[0].data[0].number, 0.35f, 0.001f);
+    T_FEQ(G_AbilityData(MAKEFOURCC('A','h','r','p'))->level[0].data[1].number, 1.5f, 0.001f);
+    T_ASSERT(S_OrderRepair(worker, building, MAKEFOURCC('A','h','r','p')));
+    T_EQ(worker->buildwork->ability, MAKEFOURCC('A','h','r','p'));
+    T_NOT_NULL(worker->currentmove);
+    if (worker->currentmove) T_STREQ(worker->currentmove->animation, "stand work");
+
+    saved_client = g_edicts[0].client;
+    g_edicts[0].client = NULL;
+    if (worker->currentmove && worker->currentmove->think) worker->currentmove->think(worker);
+    g_edicts[0].client = saved_client;
+    T_ASSERT(building->health.value > 500.0f);
+
+    G_SetSLKRows("AbilityData", old_abilities);
+    free_slk_rows(rows);
+}
+
 TEST(wc3_building, repair_accepts_authored_mechanical_unit_and_rejects_organic_unit) {
     edict_t *worker;
     edict_t *mechanical;
@@ -5445,6 +5520,33 @@ TEST(wc3_building, repair_command_button_exposes_autocast_secondary_command) {
     T_EQ(button.alternate_active, 1);
 
     building_restore_repair_data(old_abilities, rows);
+}
+
+TEST(wc3_building, roc_peasant_repair_button_uses_aliased_repair_presentation) {
+    static char const roc_human_repair[] =
+        "ID;PWXL;N;E\n"
+        "B;X2;Y2;D0\n"
+        "C;X1;Y1;K\"alias\"\n"
+        "C;X2;K\"code\"\n"
+        "C;X1;Y2;K\"Ahrp\"\n"
+        "C;X2;K\"Arep\"\n"
+        "E\n";
+    UnitAbilities_t abilities = { .abilList = "Ahrp" };
+    gameCommandButton_t button;
+    slkTestData_t *rows = parse_slk_string(roc_human_repair);
+    slkTestData_t *old = G_SetSLKRows("AbilityData", rows);
+    edict_t *worker;
+
+    setup_test_world();
+    worker = alloc_test_unit(MAKEFOURCC('h','p','e','a'), 0, 0);
+    worker->data.UnitAbilities = &abilities;
+
+    T_ASSERT(G_BuildCommandButton(worker, "Ahrp", false, 0, &button));
+    T_STREQ(button.command, "Ahrp");
+    T_ASSERT(button.art[0] != '\0');
+
+    G_SetSLKRows("AbilityData", old);
+    free_slk_rows(rows);
 }
 
 TEST(wc3_building, repair_autocast_chooses_nearest_valid_damaged_building) {

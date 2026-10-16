@@ -94,7 +94,18 @@ static bool repair_target_category_allowed(edict_t const *target, AbilityData_t 
     }
 
     if (building) {
-        return repair_list_has_token(targets, "structure", "stru");
+        if (repair_list_has_token(targets, "structure", "stru")) return true;
+        /* BZ_COMPAT_WORKAROUNDS MERGE BLOCKER: this exception is currently
+         * unguarded. Do not merge until it uses the real compatibility flag.
+         * TODO: move it behind that flag when it lands. RoC's Human Ahrp row
+         * lists mechanical,friend,nonancient but omits structure even though
+         * Peasants repair buildings. Keep the exception tied to that legacy
+         * rawcode and its characteristic target mask; newer rows continue to
+         * require their authored structure token. */
+        return data && data->id == MAKEFOURCC('A','h','r','p') &&
+               repair_list_has_token(targets, "mechanical", "mech") &&
+               repair_list_has_token(targets, "friend", "frie") &&
+               !repair_list_has_token(targets, "structure", "stru");
     }
     if (!repair_target_has_classification(target, "mechanical") ||
         !repair_list_has_token(targets, "mechanical", "mech")) {
