@@ -85,7 +85,7 @@ In [PR #585's CI run](https://github.com/corepunch/open-realm/actions/runs/37364
 after about 15 minutes with empty step lists. Each reported `The job was not acquired by Runner of type hosted even after
 multiple attempts`. This identifies hosted-runner acquisition failure before checkout, compilation, or tests; rerun CI to
 obtain code validation. The accompanying Ubuntu migration notices were notices, not the failure. The EOS job was intentionally
-skipped by the fork-PR condition in `.github/workflows/c-cpp.yml`. See [CI build environment](../CONTRIBUTING.md#build-and-linking).
+skipped by the fork-PR condition in `.github/workflows/c-cpp.yml`. See [CI build environment](https://github.com/corepunch/open-realm/blob/main/CONTRIBUTING.md#build-and-linking).
 
 ### Local suite timing
 

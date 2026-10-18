@@ -84,7 +84,7 @@ File formats, renderer notes, UI/FDF behavior, and gameplay coverage work used b
 
 - [Warcraft III Map Format](file-formats/map.md)
 - [Warcraft III MDX Model Format](file-formats/mdx.md)
-- [SLK Spreadsheet Format](../../../games/warcraft-3/file-formats/slk.md)
+- [SLK Spreadsheet Format](https://github.com/corepunch/open-realm/blob/main/games/warcraft-3/file-formats/slk.md)
 - [UI Frame Definition File](file-formats/fdf.md)
 
 ### Detailed File Notes
@@ -164,7 +164,7 @@ File formats, renderer notes, UI/FDF behavior, and gameplay coverage work used b
 - [Timer Dialogs And Mission Countdowns](timer-dialogs.md)
 - [Leaderboards And Counted Objective HUDs](leaderboards.md)
 - [Hero Revival](hero-revival.md)
-- [Sounds](../../../games/warcraft-3/sounds.md)
+- [Sounds](https://github.com/corepunch/open-realm/blob/main/games/warcraft-3/sounds.md)
 - [Music Playback](music.md)
 - [HUD Media Lifetime](hud-media.md)
 - [Campaign Loading And Asset Resolution](loading-and-assets.md)

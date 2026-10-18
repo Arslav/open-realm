@@ -45,7 +45,7 @@ gh issue edit 418 --body-file build/wc3-map-audit/report.md
 
 Hero walk / save / load on the same campaign enumerator is a separate local
 diagnostic: `make audit-wc3-hero-saveload`. See
-[Save/Load](save-load.md#hero-walk--save--load).
+[Save/Load](save-load.md#hero-walk-save-load).
 
 Custom-map playability for DotA is tracked separately in
 [#431](https://github.com/corepunch/open-realm/issues/431).

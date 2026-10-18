@@ -187,7 +187,7 @@ sequences during full-screen transitions as well as tab changes. Options therefo
 `Options Stand Alternate`, and leaves with `Options Morph Alternate`; its base Birth does not animate the alternate left
 panel. SinglePlayerSkirmish has a Morph family, whereas BattlenetCustomCreate uses Birth/Stand/Death. MultiplayerSubmenu
 and BattlenetAdvancedOptions lack a Stand sequence and hold their authored Morph endpoint at `@1.0000`.
-See [the extracted sequence inventory](../../../../games/warcraft-3/menu/panels.txt).
+See [the extracted sequence inventory](https://github.com/corepunch/open-realm/blob/main/games/warcraft-3/menu/panels.txt).
 
 Changing Options pages plays left Morph Alternate followed by Morph while the right remains at Stand. Reselecting the
 same page does nothing to the model. Repeated/reversed requests retain the running sequence clock and select the latest

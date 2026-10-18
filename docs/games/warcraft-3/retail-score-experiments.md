@@ -345,9 +345,9 @@ These runs support the following retail behavior with high confidence:
 
 OpenRealm currently represents this cell differently: `G_PlayerScoreUnitTrained`
 increments the scalar `client->score.heroes_used` for each hero creation in
-[`g_score.c`](../../../games/warcraft-3/game/g_score.c), and
+[`g_score.c`](https://github.com/corepunch/open-realm/blob/main/games/warcraft-3/game/g_score.c), and
 `WC3_ScoreCellValue` returns that scalar in
-[`score_screen_table.h`](../../../games/warcraft-3/game/hud/score_screen_table.h).
+[`score_screen_table.h`](https://github.com/corepunch/open-realm/blob/main/games/warcraft-3/game/hud/score_screen_table.h).
 Thus OpenRealm's `2` for the campaign is two creation events, whereas retail's
 visible `3` is the level on one listed portrait. They are not comparable
 values. The score-screen payload should retain current player-owned hero
@@ -406,7 +406,7 @@ extract the output `war3map.w3u` back out and check the target unit/field before
 starting retail.
 
 The captured baseline and cost-series evidence is summarized in
-[`build/retail-score-test/priority-experiments/README.md`](../../../build/retail-score-test/priority-experiments/README.md).
+`build/retail-score-test/priority-experiments/README.md` (local investigation artifact).
 That file also lists the specific trace/screenshot artifact for each variant.
 
 ## Reproduce the UnitBalance comparison

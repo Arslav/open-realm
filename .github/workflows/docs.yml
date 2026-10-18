@@ -19,6 +19,7 @@ on:
       - "share/**"
       - "Makefile"
       - "mkdocs.yml"
+      - "requirements-docs.txt"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
@@ -35,7 +36,7 @@ jobs:
         with:
           python-version: "3.x"
       - name: Install MkDocs
-        run: pip install mkdocs-material
+        run: python -m pip install -r requirements-docs.txt
       - name: Setup Pages
         uses: actions/configure-pages@v4
       # The browser engine uses pthreads, WasmFS and OffscreenCanvas; this
@@ -49,7 +50,8 @@ jobs:
       - name: Build Warcraft III browser engine
         run: make web-warcraft3-engine
       - name: Build with MkDocs
-        run: mkdocs build
+        # Broken navigation and document links must fail before publication.
+        run: mkdocs build --strict
       - name: Package browser game into Pages artifact
         run: python3 port/web/publish-pages.py build/web/engine site/play
       - name: Upload artifact

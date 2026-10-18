@@ -140,7 +140,9 @@ def main():
          # Transfer the canvas to that thread; do not proxy synchronous GL calls
          # back to the browser thread (which can deadlock during initialization).
          "-sOFFSCREENCANVAS_SUPPORT=1", "-sOFFSCREENCANVASES_TO_PTHREAD=#canvas",
-         "-sINITIAL_MEMORY=134217728", "-sALLOW_MEMORY_GROWTH=1", "-sGROWABLE_ARRAYBUFFERS=2",
+         # SDK 4.0.21 treats GROWABLE_ARRAYBUFFERS as an experimental boolean;
+         # the old value 2 aborts linking. Use the default memory-growth path.
+         "-sINITIAL_MEMORY=134217728", "-sALLOW_MEMORY_GROWTH=1",
          "-sFILESYSTEM=1", "-sENVIRONMENT=web",
          "-sASSERTIONS=2" if args.debug else "-sASSERTIONS=1",
          "-sSTACK_OVERFLOW_CHECK=2" if args.debug else "-sSTACK_OVERFLOW_CHECK=0",

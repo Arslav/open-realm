@@ -130,7 +130,7 @@ regression cases cover server-authoritative native defeat reduction and the
 fallback button's visibility, styling and command wiring.
 
 See [Campaign progress](campaign-progress.md) for *separate* mission unlock
-persistence, [JASS native coverage](../../../games/warcraft-3/jass-native-coverage.md)
+persistence, [JASS native coverage](https://github.com/corepunch/open-realm/blob/main/games/warcraft-3/jass-native-coverage.md)
 for runtime difficulty handles, and [Save/load](save-load.md) for current
 serialization boundaries.
 

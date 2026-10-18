@@ -18,11 +18,11 @@ the page*. Initial navigation cannot rely on a not-yet-installed worker.
    object files. Do not publish Blizzard MPQs or imported disc contents.
 3. The game-scoped `coi-serviceworker.js` and startup gate in
    `pages-isolation.js` are shipped with the game. The worker scope is
-   `/openwarcraft3/play/`, matching the repository Pages URL.
+   `/open-realm/play/`, matching the repository Pages URL.
 4. Pushes to `main` that change documentation or browser-build inputs trigger
    the Pages deployment workflow. No game link is added to documentation
    navigation.
-5. Visit `https://corepunch.github.io/openwarcraft3/play/`. On the first visit,
+5. Visit `https://corepunch.github.io/open-realm/play/`. On the first visit,
    the page installs the worker and reloads once under its control. Verify
    `crossOriginIsolated === true` before the threaded engine starts. Ordinary
    `file://` URLs do not work.
@@ -32,6 +32,50 @@ as `/index.wasm` or `/sw.js`. Relative URLs resolve within that project's
 Pages origin and path. Emscripten-generated asset paths must follow the same
 rule. The deploy workflow uses the game-scoped worker described below; the
 sample worker remains a separate reference for a cache-enabled deployment.
+
+## Diagnosing a failed docs build
+
+The `Deploy Docs / build` job compiles the browser engine before running
+MkDocs. A compiler or linker failure therefore skips both documentation
+generation and the dependent deploy job. Inspect the first failed step with
+`gh run view <run-id> --repo corepunch/open-realm --log-failed` before changing
+Pages permissions or Markdown.
+
+Run 39110161645 at commit `082f398303bd` failed at the Emscripten link:
+`setting GROWABLE_ARRAYBUFFERS expects bool but got int`. Commit
+`39d7d2d41` had added `-sGROWABLE_ARRAYBUFFERS=2`, but the pinned SDK 4.0.21
+defines that setting as an experimental boolean (see its
+[settings source](https://github.com/emscripten-core/emscripten/blob/4.0.21/src/settings.js)).
+Remove the override and retain `-sALLOW_MEMORY_GROWTH=1`; changing it to `1`
+would enable an experimental browser feature rather than restore the default.
+
+After removing that flag, the same commit also failed with duplicate
+`FDF_ParseLayerStyle` definitions in `game.o` and `menu.o`. The parser added
+in `8d5a74dff` must follow the existing module namespaces in
+`port/web/src/web_fdf_namespace.h`, just like `FDF_ParseControlStyle`.
+Keep the game and menu FDF instances separate; sharing their registries or
+weakening duplicate-symbol checks would break their native ownership model.
+
+SDK 4.0.21 can emit `-Wpthreads-mem-growth` with this supported memory-growth
+path. It warns about JavaScript performance, not a failed link; the engine
+still needs pthreads and memory growth. Do not enable an experimental memory
+feature merely to suppress that diagnostic.
+
+To verify the full artifact locally with Emscripten 4.0.21 active:
+
+```sh
+python3 -m pip install -r requirements-docs.txt
+make font
+make web-warcraft3-engine
+mkdocs build --strict
+python3 port/web/publish-pages.py build/web/engine site/play
+python3 -m unittest discover -s port/web/tests -p 'test_*.py'
+```
+
+MkDocs and its Material theme are pinned in `requirements-docs.txt`.
+Strict builds reject missing navigation pages, document links and anchors. Source files and
+guides outside `docs/` must use GitHub links, because MkDocs does not publish
+them; paths to ignored local investigation artifacts should be plain text.
 
 ## Registration and startup gate (illustrative)
 
