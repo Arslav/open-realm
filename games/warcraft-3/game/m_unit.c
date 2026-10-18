@@ -1,4 +1,7 @@
 #include "g_local.h"
+#ifdef WC3_SC2API
+#include "sc2api/sc2api_server.h"
+#endif
 
 //void unit_die(edict_t *self);
 //void unit_decay2(edict_t *self);
@@ -468,6 +471,10 @@ void unit_die(edict_t *self, edict_t *attacker) {
     bool summon_explodes, script_explodes;
 
     if (!self || (self->svflags & SVF_DEADMONSTER)) return;
+#ifdef WC3_SC2API
+    WC3_SC2API_RecordDeath(self);
+#endif
+    G_ClearActiveUnitOrder(self);
     selected_mask = self->selected;
     summon_explodes = (self->aiflags & AI_SUMMON_EXPLODES_ON_DEATH) != 0;
     script_explodes = (self->aiflags & AI_SCRIPT_EXPLODED) != 0;
@@ -779,6 +786,18 @@ static uint32_t unit_spell_code_for_base(edict_t const *unit, uint32_t base_code
     return G_UnitAbilityLevel(unit, base_code) ? base_code : 0;
 }
 
+uint32_t G_OrderDefinitionCount(void) {
+    return (uint32_t)(sizeof(unit_order_defs) / sizeof(unit_order_defs[0]));
+}
+
+bool G_OrderDefinitionInfo(uint32_t index, uint32_t *id, cstring_t  *name, uint32_t *ability) {
+    if (index >= G_OrderDefinitionCount()) return false;
+    if (id) *id = unit_order_defs[index].id;
+    if (name) *name = unit_order_defs[index].name;
+    if (ability) *ability = unit_order_defs[index].ability;
+    return true;
+}
+
 static uint32_t unit_spell_code_for_order(edict_t const *unit, cstring_t order) {
     if (!unit || !order) return 0;
     ability_t const *ordered = FindAbilityByOrder(order);
@@ -799,30 +818,146 @@ static uint32_t unit_spell_code_for_order(edict_t const *unit, cstring_t order) 
 }
 
 static uint32_t issued_order_ids[MAX_ENTITIES];
+static uint32_t issued_order_source_spawn_times[MAX_ENTITIES];
 static vec2_t issued_order_points[MAX_ENTITIES];
 static bool issued_order_point_valid[MAX_ENTITIES];
+static uint32_t issued_order_target_numbers[MAX_ENTITIES];
+static uint32_t issued_order_target_spawn_times[MAX_ENTITIES];
+static bool issued_order_target_valid[MAX_ENTITIES];
 
+/*SC2 Raw Unit.orders describes the command currently being executed, while
+ *Warcraft's issued-order event state above intentionally remembers the last
+ *command the player issued (including Shift-queued commands). Keep those
+ *contracts separate so observing a queue never changes JASS event semantics. */
 static uint32_t unit_order_event_id(cstring_t order) {
     return G_OrderId(order);
 }
 
+#ifdef WC3_SC2API
+static unitOrder_t active_unit_orders[MAX_ENTITIES];
+static uint32_t active_order_source_spawn_times[MAX_ENTITIES];
+
+static bool unit_active_order_lifetime_valid(edict_t const *self) {
+    return self && self->inuse && self->s.number >= 0 && self->s.number < globals.num_edicts &&
+           globals.edicts + self->s.number == self &&
+           active_order_source_spawn_times[self->s.number] == self->spawn_time;
+}
+
+void G_SetActiveUnitOrder(edict_t *self, unitOrder_t const *order) {
+    if (!self || !order || self->s.number >= MAX_ENTITIES) return;
+    active_unit_orders[self->s.number] = *order;
+    active_order_source_spawn_times[self->s.number] = self->spawn_time;
+}
+
+void G_ClearActiveUnitOrder(edict_t *self) {
+    uint32_t number;
+    if (!self || self->s.number < 0 || self->s.number >= MAX_ENTITIES) return;
+    number = (uint32_t)self->s.number;
+    memset(&active_unit_orders[number], 0, sizeof(active_unit_orders[number]));
+    active_order_source_spawn_times[number] = 0;
+}
+
+static void unit_set_active_order(edict_t *self, cstring_t order, unitOrderTargetType_t target_type,
+                                  vec2_t const *point, edict_t *target, uint32_t issuer_player,
+                                  float group_speed) {
+    unitOrder_t *active;
+    uint32_t number;
+    if (!self || !order || self->s.number < 0 || self->s.number >= MAX_ENTITIES) return;
+    number = (uint32_t)self->s.number;
+    active = &active_unit_orders[number];
+    memset(active, 0, sizeof(*active));
+    snprintf(active->order, sizeof(active->order), "%s", order);
+    active->target_type = target_type;
+    active->issuer_player = issuer_player;
+    active->group_speed = group_speed;
+    if (point) active->point = *point;
+    if (target && target->inuse && target->s.number < globals.num_edicts &&
+        globals.edicts + target->s.number == target) {
+        active->target_number = target->s.number;
+        active->target_spawn_time = target->spawn_time;
+    }
+    active_order_source_spawn_times[number] = self->spawn_time;
+}
+
+bool G_GetActiveUnitOrder(edict_t const *self, unitOrder_t *out) {
+    if (out) memset(out, 0, sizeof(*out));
+    if (!out || !unit_active_order_lifetime_valid(self) || !active_unit_orders[self->s.number].order[0])
+        return false;
+    *out = active_unit_orders[self->s.number];
+    return true;
+}
+
+bool G_GetQueuedUnitOrder(edict_t const *self, uint32_t index, unitOrder_t *out) {
+    uint32_t slot;
+    if (out) memset(out, 0, sizeof(*out));
+    if (!self || !out || index >= self->order_queue.count || index >= MAX_UNIT_ORDER_QUEUE) return false;
+    slot = (self->order_queue.head + index) % MAX_UNIT_ORDER_QUEUE;
+    *out = self->order_queue.entries[slot];
+    return out->order[0] != '\0';
+}
+
+
+#else
+void G_ClearActiveUnitOrder(edict_t *self) { (void)self; }
+void G_SetActiveUnitOrder(edict_t *self, unitOrder_t const *order) { (void)self; (void)order; }
+#define unit_set_active_order(...) ((void)0)
+#endif
+
+static bool unit_issued_order_lifetime_valid(edict_t const *self) {
+    return self && self->inuse && self->s.number < globals.num_edicts &&
+           globals.edicts + self->s.number == self &&
+           issued_order_source_spawn_times[self->s.number] == self->spawn_time;
+}
+
+void G_ClearIssuedOrderState(edict_t *self) {
+    uint32_t number;
+
+    if (!self || self->s.number >= MAX_ENTITIES) return;
+    number = self->s.number;
+    issued_order_ids[number] = 0;
+    issued_order_source_spawn_times[number] = 0;
+    issued_order_points[number] = (vec2_t){ 0.0f, 0.0f };
+    issued_order_point_valid[number] = false;
+    issued_order_target_numbers[number] = 0;
+    issued_order_target_spawn_times[number] = 0;
+    issued_order_target_valid[number] = false;
+    G_ClearActiveUnitOrder(self);
+}
+
 uint32_t G_GetIssuedOrderId(edict_t const *self) {
-    if (!self || self->s.number >= MAX_ENTITIES) return 0;
+    if (!unit_issued_order_lifetime_valid(self)) return 0;
     return issued_order_ids[self->s.number];
 }
 
 bool G_GetIssuedOrderPoint(edict_t const *self, vec2_t *point) {
     if (point) *point = (vec2_t){ 0.0f, 0.0f };
-    if (!self || self->s.number >= MAX_ENTITIES || !point ||
+    if (!point || !unit_issued_order_lifetime_valid(self) ||
         !issued_order_point_valid[self->s.number]) return false;
     *point = issued_order_points[self->s.number];
     return true;
+}
+
+edict_t *G_GetIssuedOrderTarget(edict_t const *self) {
+    uint32_t number;
+    edict_t *target;
+
+    if (!unit_issued_order_lifetime_valid(self) ||
+        !issued_order_target_valid[self->s.number]) return NULL;
+    number = issued_order_target_numbers[self->s.number];
+    if (number >= globals.num_edicts) return NULL;
+    target = globals.edicts + number;
+    if (!target->inuse || target->spawn_time != issued_order_target_spawn_times[self->s.number]) {
+        return NULL;
+    }
+    return target;
 }
 
 void G_PublishIssuedPointOrder(edict_t *self, uint32_t order_id, vec2_t const *point,
                                uint32_t issuer_player, cstring_t debug_order) {
     if (!self || self->s.number >= MAX_ENTITIES || !point) return;
     issued_order_ids[self->s.number] = order_id;
+    issued_order_source_spawn_times[self->s.number] = self->spawn_time;
+    issued_order_target_valid[self->s.number] = false;
     issued_order_points[self->s.number] = *point;
     issued_order_point_valid[self->s.number] = true;
     if (WC3_TUTORIAL_DEBUG_ENABLED()) {
@@ -840,6 +975,8 @@ void G_PublishIssuedImmediateOrder(edict_t *self, uint32_t order_id,
                                    uint32_t issuer_player, cstring_t debug_order) {
     if (!self || self->s.number >= MAX_ENTITIES) return;
     issued_order_ids[self->s.number] = order_id;
+    issued_order_source_spawn_times[self->s.number] = self->spawn_time;
+    issued_order_target_valid[self->s.number] = false;
     issued_order_point_valid[self->s.number] = false;
     G_PublishEvent(self, EVENT_PLAYER_UNIT_ISSUED_ORDER);
     G_PublishEvent(self, EVENT_UNIT_ISSUED_ORDER);
@@ -851,7 +988,15 @@ static void unit_publish_target_order(edict_t *self, cstring_t order,
 
     if (!self || self->s.number >= MAX_ENTITIES) return;
     issued_order_ids[self->s.number] = order_id;
+    issued_order_source_spawn_times[self->s.number] = self->spawn_time;
     issued_order_point_valid[self->s.number] = false;
+    issued_order_target_valid[self->s.number] = false;
+    if (target && target->s.number < globals.num_edicts &&
+        globals.edicts + target->s.number == target) {
+        issued_order_target_numbers[self->s.number] = target->s.number;
+        issued_order_target_spawn_times[self->s.number] = target->spawn_time;
+        issued_order_target_valid[self->s.number] = true;
+    }
     if (WC3_TUTORIAL_DEBUG_ENABLED()) {
         fprintf(stderr,
                 "WC3_QUEST_ORDER publish event=TARGET player=%u unit=%u id=%.4s order=\"%s\" order_id=%u target=%u target_id=%.4s\n",
@@ -1095,6 +1240,7 @@ bool G_IssueUnitTargetOrder(edict_t *self, cstring_t order, edict_t *target,
             if (accepted) {
                 G_CreepGuardExplicitOrder(self);
                 S_UnitAbilityOrderAccepted(self, order);
+                unit_set_active_order(self, order, UNIT_ORDER_TARGET_ENTITY, NULL, target, issuer_player, 0.0f);
                 unit_publish_target_order(self, order, target, issuer_player);
             }
             return accepted;
@@ -1110,7 +1256,9 @@ bool G_IssueUnitTargetOrder(edict_t *self, cstring_t order, edict_t *target,
     if (queue && G_UnitHasActiveOrder(self)) {
         bool const accepted = G_QueueUnitOrder(self, order, UNIT_ORDER_TARGET_ENTITY, NULL, target,
                                                issuer_player, 0.0f, 0);
-        if (accepted) unit_publish_target_order(self, order, target, issuer_player);
+        if (accepted) {
+            unit_publish_target_order(self, order, target, issuer_player);
+        }
         return accepted;
     }
     if (!queue) G_ClearUnitOrderQueue(self);
@@ -1119,6 +1267,7 @@ bool G_IssueUnitTargetOrder(edict_t *self, cstring_t order, edict_t *target,
         if (accepted) {
             G_CreepGuardExplicitOrder(self);
             S_UnitAbilityOrderAccepted(self, order);
+            unit_set_active_order(self, order, UNIT_ORDER_TARGET_ENTITY, NULL, target, issuer_player, 0.0f);
             unit_publish_target_order(self, order, target, issuer_player);
         }
         return accepted;
@@ -1151,6 +1300,7 @@ bool G_IssueUnitPointOrder(edict_t *self, cstring_t order, vec2_t const *point,
             if (accepted) {
                 G_CreepGuardExplicitOrder(self);
                 S_UnitAbilityOrderAccepted(self, order);
+                unit_set_active_order(self, order, UNIT_ORDER_TARGET_POINT, point, NULL, issuer_player, group_speed);
                 G_PublishIssuedPointOrder(self, unit_order_event_id(order), point,
                                           issuer_player, order);
             }
@@ -1176,6 +1326,7 @@ bool G_IssueUnitPointOrder(edict_t *self, cstring_t order, vec2_t const *point,
         if (accepted) {
             G_CreepGuardExplicitOrder(self);
             S_UnitAbilityOrderAccepted(self, order);
+            unit_set_active_order(self, order, UNIT_ORDER_TARGET_POINT, point, NULL, issuer_player, group_speed);
             G_PublishIssuedPointOrder(self, unit_order_event_id(order), point,
                                       issuer_player, order);
         }
@@ -1191,6 +1342,9 @@ static bool unit_start_next_queued_order(edict_t *self) {
         if (queued.target_type == UNIT_ORDER_TARGET_POINT) {
             if (unit_issueorder_now(self, queued.order, &queued.point, queued.group_speed)) {
                 S_UnitAbilityOrderAccepted(self, queued.order);
+                unit_set_active_order(self, queued.order, queued.target_type, &queued.point,
+                                      queued.target_type == UNIT_ORDER_TARGET_ENTITY ? globals.edicts + queued.target_number : NULL,
+                                      queued.issuer_player, queued.group_speed);
                 return true;
             }
         } else if (queued.target_type == UNIT_ORDER_TARGET_ENTITY) {
@@ -1200,6 +1354,9 @@ static bool unit_start_next_queued_order(edict_t *self) {
             if (!target->inuse || target->spawn_time != queued.target_spawn_time) continue;
             if (unit_issuetargetorder_now(self, queued.order, target)) {
                 S_UnitAbilityOrderAccepted(self, queued.order);
+                unit_set_active_order(self, queued.order, queued.target_type, &queued.point,
+                                      queued.target_type == UNIT_ORDER_TARGET_ENTITY ? globals.edicts + queued.target_number : NULL,
+                                      queued.issuer_player, queued.group_speed);
                 return true;
             }
         } else if (queued.target_type == UNIT_ORDER_TARGET_NONE) {
@@ -1221,6 +1378,7 @@ static bool unit_start_next_queued_order(edict_t *self) {
 bool G_UnitStartNextQueuedOrder(edict_t *self) {
     bool const started = unit_start_next_queued_order(self);
     if (started) G_CreepGuardExplicitOrder(self);
+    else G_ClearActiveUnitOrder(self);
     return started;
 }
 
@@ -1336,6 +1494,7 @@ bool unit_issueimmediateorder(edict_t *self, cstring_t order) {
     if (!strcmp(order, "stop")) {
         G_ClearUnitOrderQueue(self);
         order_stop(self);
+        G_ClearActiveUnitOrder(self);
         G_CreepGuardExplicitOrder(self);
         S_UnitAbilityOrderAccepted(self, order);
         G_PublishIssuedImmediateOrder(self, G_OrderId(order), self->s.player, order);
@@ -1346,6 +1505,7 @@ bool unit_issueimmediateorder(edict_t *self, cstring_t order) {
         if (accepted) {
             G_CreepGuardExplicitOrder(self);
             S_UnitAbilityOrderAccepted(self, order);
+            unit_set_active_order(self, order, UNIT_ORDER_TARGET_NONE, NULL, NULL, self->s.player, 0.0f);
             G_PublishIssuedImmediateOrder(self, G_OrderId(order), self->s.player, order);
         }
         return accepted;
@@ -1358,6 +1518,7 @@ bool unit_issueimmediateorder(edict_t *self, cstring_t order) {
         if (accepted) {
             G_CreepGuardExplicitOrder(self);
             S_UnitAbilityOrderAccepted(self, order);
+            unit_set_active_order(self, order, UNIT_ORDER_TARGET_NONE, NULL, NULL, self->s.player, 0.0f);
             G_PublishIssuedImmediateOrder(self, G_OrderId(order), self->s.player, order);
             return true;
         }
@@ -1381,7 +1542,8 @@ bool unit_issueimmediateorder(edict_t *self, cstring_t order) {
             if (accepted) {
                 G_CreepGuardExplicitOrder(self);
                 S_UnitAbilityOrderAccepted(self, order);
-                G_PublishIssuedImmediateOrder(self, G_OrderId(order), self->s.player, order);
+                unit_set_active_order(self, order, UNIT_ORDER_TARGET_NONE, NULL, NULL, self->s.player, 0.0f);
+            G_PublishIssuedImmediateOrder(self, G_OrderId(order), self->s.player, order);
             }
             return accepted;
         }
@@ -2059,6 +2221,42 @@ bool unit_addtimedstatus(edict_t *ent, cstring_t skill, uint32_t level, float du
 
 bool unit_addstatus(edict_t *ent, cstring_t skill, uint32_t level) {
     return unit_addtimedstatus(ent, skill, level, 0);
+}
+
+static uint32_t unit_rawcodefromlisttoken(cstring_t text) {
+    char rawcode[5] = { 0 };
+    uint32_t length = 0;
+
+    if (!text) return 0;
+    while (*text && (isspace((unsigned char)*text) || *text == ',' || *text == ';')) text++;
+    while (text[length] && text[length] != ',' && text[length] != ';' &&
+           !isspace((unsigned char)text[length]) && length < 4) {
+        rawcode[length] = text[length];
+        length++;
+    }
+    return length == 4 ? FS_SLKKey(rawcode) : 0;
+}
+
+uint32_t G_UnitStatusBuffCode(heroabilitystatus_t const *status) {
+    AbilityData_t const *ability;
+    abilityLevel_t const *row;
+    uint32_t level;
+    uint32_t buff;
+
+    if (!status || !status->level) return 0;
+    if ((status->code & 0xff) == 'B') return status->code;
+    /* Timed statuses use a separate progress-bar presentation. Persistent
+     * Axxx status records (for example Devotion Aura on its caster) have
+     * timestamp == 0 and may resolve through AbilityData.BuffID*. Cooldowns
+     * are stored independently in edict_t::abilitycooldowns. */
+    if (status->timestamp) return 0;
+    ability = G_AbilityData(status->code);
+    if (!ability || !ability->id) return 0;
+    level = MAX(status->level, 1u);
+    row = G_AbilityLevel(status->code, level);
+    buff = unit_rawcodefromlisttoken(row->buffID);
+    if (!buff && level != 1) buff = unit_rawcodefromlisttoken(G_AbilityLevel(status->code, 1)->buffID);
+    return buff;
 }
 
 uint32_t G_UnitStatusLevel(edict_t const *ent, uint32_t code) {

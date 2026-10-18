@@ -382,6 +382,10 @@ static void G_InitEdict(edict_t *e) {
     e->s.scale = 1;
     e->animation_speed = 1.0f;
     e->s.number = (int)(e - g_edicts);
+    /*Issued-order state is kept outside edict_t for JASS/current-order
+     *compatibility. Clear it whenever an edict slot begins a new lifetime so
+     *recycled slots cannot inherit an old raw/JASS order. */
+    G_ClearIssuedOrderState(e);
 }
 
 edict_t *G_Spawn(void) {

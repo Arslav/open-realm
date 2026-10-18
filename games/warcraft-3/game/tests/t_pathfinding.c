@@ -66,6 +66,7 @@ bool   CM_ClosestReachablePointForRadiusFlags(vec2_t const *from, vec2_t const *
 bool   CM_LineIsWalkableForRadius(vec2_t const *a, vec2_t const *b, float radius);
 bool   CM_LineIsPathableForRadiusFlags(vec2_t const *a, vec2_t const *b, float radius, uint8_t blocked_flags);
 bool   CM_FindDirectApproachPointForRadius(vec2_t const *from, vec2_t const *target, float range, float radius, vec2_t *out);
+float  CM_PathDistanceForRadiusFlags(vec2_t const *from, vec2_t const *target, float radius, uint8_t blocked_flags);
 bool   CM_FindApproachPointToFootprintForRadius(edict_t const *target, vec2_t const *from, float range, float radius, vec2_t *out);
 bool   CM_FindInnerApproachPointToFootprintForRadius(edict_t const *target, vec2_t const *from, float range, float radius, vec2_t *out);
 bool   CM_FlowReachedGoal(uint32_t generation, float x, float y);
@@ -736,6 +737,25 @@ TEST(wc3_pathfinding, heatmap_reuses_neighbor_pathability_queries) {
     /* A flood checks each of eight candidate neighbors once; diagonal corner
      * checks reuse the already computed cardinal-neighbor results. */
     T_ASSERT(stats.pathability_checks <= stats.heatmap_iterations * 8 + 1);
+}
+
+TEST(wc3_pathfinding, synchronous_path_distance_follows_static_detours_and_reports_unreachable) {
+    vec2_t from = {2.5f, 5.5f}, target = {7.5f, 5.5f};
+    float direct, detour;
+
+    build_open_map();
+    setup_test_pathmap(MAP_W, MAP_H, open_map);
+    direct = CM_PathDistanceForRadiusFlags(&from, &target, 0.0f, CM_PATHING_UNWALKABLE);
+    T_FEQ(direct, 5.0f, 0.001f);
+
+    build_wall_map();
+    setup_test_pathmap(MAP_W, MAP_H, wall_map);
+    detour = CM_PathDistanceForRadiusFlags(&from, &target, 0.0f, CM_PATHING_UNWALKABLE);
+    T_ASSERT(detour > direct);
+
+    build_split_map();
+    setup_test_pathmap(MAP_W, MAP_H, split_map);
+    T_FEQ(CM_PathDistanceForRadiusFlags(&from, &target, 0.0f, CM_PATHING_UNWALKABLE), 0.0f, 0.001f);
 }
 
 TEST(wc3_pathfinding, nearby_detour_accelerator_returns_clear_waypoint) {

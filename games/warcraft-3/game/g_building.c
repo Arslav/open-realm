@@ -75,8 +75,6 @@ void G_ClearBuildPreview(edict_t *builder) {
     G_FreeEdict(preview);
 }
 #define WC3_UNDEAD_BUILD_WORK_MS 2267 // milliseconds; Warsmash CBehaviorUndeadBuild summon-work window
-#define WC3_PATH_UNWALKABLE 0x02
-#define WC3_PATH_UNBUILDABLE 0x08
 #define WC3_PATH_BLOCKVISION 0x10
 #define WC3_PATH_UNFLOAT     CM_PATHING_UNSWIMMABLE
 #define WC3_PATH_UNAMPH      0x80 /* placement predicate: UNWALKABLE && UNSWIMMABLE */
