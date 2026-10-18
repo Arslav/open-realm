@@ -1100,6 +1100,23 @@ static bool G_FowPlayerFogDisabled(uint32_t player) {
     return client && (client->ps.rdflags & RDF_NOFOG);
 }
 
+/* External observations use this same authoritative grid when retiring a
+ * remembered building after its last observed location becomes visible. */
+bool G_FowPointIsVisible(uint32_t player, vec2_t const *point) {
+    uint32_t x, y;
+    fowPlayerGrid_t const *grid;
+    if (!point || player >= MAX_PLAYERS) return false;
+    if (!G_FowReady() || G_FowPlayerFogDisabled(player)) return true;
+    x = G_FowWorldToCellX(point->x);
+    y = G_FowWorldToCellY(point->y);
+    if (x == FOW_INVALID_CELL || y == FOW_INVALID_CELL) return false;
+    grid = &level.fow.players[player];
+#ifdef WC3_FOW_PACKED_MASK
+    if (g_fow_fast) return G_FowPackedAt(grid->packed_visible, grid, x, y);
+#endif
+    return grid->visible && grid->visible[y * level.fow.width + x] != 0;
+}
+
 /* Hover information is interactive gameplay state, so unlike explored
  * scenery it is exposed only while the entity is actively visible. */
 bool G_FowPlayerCanHoverEntity(uint32_t player, edict_t const *ent) {

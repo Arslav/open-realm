@@ -82,6 +82,10 @@ struct game_import {
     /* Freeze only authoritative simulation advancement. The server keeps
      * packet processing and client transport alive while paused. */
     void (*SetPaused)(bool paused);
+    /*Request a map/session transition without re-entering server teardown from
+     *inside a game callback. The server performs it after the callback returns. */
+    bool (*RequestMap)(cstring_t map);
+    void (*RequestQuit)(void);
     void (*multicast)(vec3_t const *origin, multicast_t to);
     void (*unicast)(edict_t *ent);
     void (*Write)(pfWriteType_t type, void const *value);
@@ -100,6 +104,8 @@ struct game_import {
     void (*UserPath)(cstring_t rel, string_t out, uint32_t out_size);
     /* Resolve save files under the platform's per-user data directory. */
     void (*SavePath)(cstring_t rel, string_t out, uint32_t out_size);
+    /*Enumerate available map paths through the engine filesystem. */
+    uint32_t (*ListMaps)(void (*callback)(cstring_t path, void *userData), void *userData);
     /* Untrusted JASS save natives are confined to an engine-owned session
      * sandbox. The game cannot choose its root or access manual saves. */
     bool (*ScriptSavePath)(cstring_t name, string_t out, uint32_t out_size);
@@ -168,6 +174,15 @@ struct game_export {
     void (*Init)(void);
     void (*Shutdown)(void);
     void (*RunFrame)(void);
+    /*Optional external-controller hooks. The server polls ExternalFrame even
+     *while the simulation clock is externally owned; returned steps are
+     *advanced by the server through the normal RunFrame boundary. */
+    bool (*ExternalActive)(void);
+    bool (*ExternalOwnsClock)(void);
+    uint32_t (*ExternalFrame)(void);
+    bool (*ExternalCanAdvance)(void);
+    void (*ExternalStepComplete)(uint32_t steps);
+    void (*ExternalMapComplete)(cstring_t map, bool success);
     cstring_t (*GetThemeValue)(cstring_t filename);
     void (*ClientCommand)(edict_t *ent, uint32_t argc, cstring_t argv[]);
     void (*ClientInput)(edict_t *ent, inputCmd_t const *cmd);

@@ -307,6 +307,8 @@ typedef struct {
 } cmPathJobStatus_t;
 void CM_GetPathJobStatus(cmPathJobStatus_t *status);
 bool  CM_FindPathWaypoint(pathAccelParams_t const *params, vec2_t *out);
+bool CM_GetTerrainPathingFlagsAt(vec2_t const *location, uint8_t *flags);
+float CM_PathDistanceForRadiusFlags(vec2_t const *from, vec2_t const *target, float radius, uint8_t blocked_flags);
 bool  CM_ActivateCachedFlow(uint32_t generation);
 bool  CM_ActivateCachedFlowForFlags(uint32_t generation, uint8_t blocked_flags);
 bool  CM_FlowReachedGoal(uint32_t generation, float x, float y);
