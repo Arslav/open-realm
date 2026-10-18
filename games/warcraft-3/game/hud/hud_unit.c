@@ -270,18 +270,17 @@ static bool G_BuildCommandButtonState(edict_t *ent, cstring_t code, bool researc
     }
     item = MAKE(abilityitem_t, .code = ability_code, .ability = ability);
     toggle_on = G_CommandButtonToggleOn(ent, &item, research, toggle_state);
-    /* BZ_COMPAT_WORKAROUNDS MERGE BLOCKER: this fallback is currently
-     * unguarded. Do not merge until it uses the real compatibility flag.
-     * TODO: guard this fallback once that flag has
-     * landed. RoC's Human repair command is Ahrp, with Arep as its AbilityData
-     * code alias. Its presentation is authored under Arep in
-     * CommonAbilityFunc.txt, while the requested command remains Ahrp. An
-     * authored Ahrp presentation takes precedence when present. */
+#if BZ_COMPAT_WORKAROUNDS
+    /* RoC's Human repair command is Ahrp, with Arep as its AbilityData code
+     * alias. Its presentation is authored under Arep in CommonAbilityFunc.txt,
+     * while the requested command remains Ahrp. An authored Ahrp presentation
+     * takes precedence when present. */
     if ((!FindConfigValue(art_code, G_ResearchField(STR_ART, research && !upgrade_research)) ||
          !*FindConfigValue(art_code, G_ResearchField(STR_ART, research && !upgrade_research))) &&
         !strcmp(code, "Ahrp") && !strcmp(base_code, "Arep")) {
         art_code = base_code;
     }
+#endif
     art = G_CommandButtonValue(
         FindConfigValue(art_code, G_ResearchField(STR_ART, research && !upgrade_research)),
         toggle_on ? FindConfigValue(art_code, STR_UNART) : NULL, toggle_on);
