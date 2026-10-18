@@ -5,6 +5,9 @@ loopback WebSocket at `ws://127.0.0.1:5000/sc2api`. It translates requests into 
 orders, production, research, autocast, visibility and routing; it does not run another simulation.
 The implementation adapts sookyboo's original [PR #506](https://github.com/corepunch/open-realm/pull/506),
 commit `b1fc460aed42ba653918e242856f2e5c8a2d08ed`, to the current ability and pooled-state APIs.
+The integration in [PR #653](https://github.com/corepunch/open-realm/pull/653) retains that original
+commit in its ancestry while using the adapted implementation. Do not reapply the WIP patch: its
+inline entity state and ability hooks predate the current APIs; all 32 original core tests remain.
 
 ## Build and start
 
