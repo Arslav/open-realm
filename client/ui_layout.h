@@ -49,6 +49,7 @@ void SCR_LayoutClampSelectionRect(rect_t *rect);
 void SCR_DrawLayout(void);
 void SCR_DrawLoadingLayout(void);
 bool SCR_LayoutMouseEvent(layoutMouseEvent_t const *event);
+void SCR_LayoutCancelPress(void);
 bool SCR_LayoutScrollTextAreaAt(handle_t layout, vec2_t const *point, int wheel_y);
 float SCR_LayoutTextAreaMaxScroll(uiFrame_t const *frame);
 bool SCR_LayoutKeyEvent(int key, bool shift_held);

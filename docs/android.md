@@ -354,7 +354,7 @@ remain follow-up work. Quit a game before replacing its archives.
    is not a substitute for physical GPU checks.
 3. Finish import progress/cancellation and recovery from process death.
 4. Add background/foreground timing and audio policy, and graphics resource restoration.
-5. Verify tablet context taps, pan/pinch and non-activating holds (`games/warcraft-3/tablet-controls.md`; documentation follows in this series)
+5. Verify [tablet context taps, pan/pinch and non-activating holds](games/warcraft-3/tablet-controls.md)
    on a physical tablet; SDL and game-command tests cover the input contract. Back and software-keyboard flow remain.
 6. Check all native libraries and memory-mapping code on 4 KB and 16 KB page-size devices. In particular,
    investigate `FS_MmapFile`'s `MAP_FIXED` at `base + MMAP_HDR_SIZE` (16 bytes) with a regression test before fixing it.

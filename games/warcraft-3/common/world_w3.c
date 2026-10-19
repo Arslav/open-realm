@@ -689,6 +689,27 @@ void CM_ReadPathMap(handle_t archive) {
 #if defined(BZ_CLIENT_WORLD) && defined(BZ_TESTS)
 #include "shared/test.h"
 
+TEST(wc3_camera, closer_interactive_zoom_preserves_map_limits) {
+    mapInfo_t old_info = world.info;
+    gameCameraZoomPolicy_t policy;
+    world.info = (mapInfo_t){ 0 };
+    T_ASSERT(CL_GameCameraZoomPolicy(&policy, 1650, 3000));
+    T_FEQ(1250.0f / policy.minimum, 1.2f, 0.0001f);
+    T_FEQ(policy.default_distance, 1650, 0.001f);
+    T_FEQ(policy.maximum, 3000, 0.001f);
+
+    world.info = (mapInfo_t){
+        .fileFormat = 33,
+        .flags = force_minimum_camera_zoom | force_default_camera_zoom | force_maximum_camera_zoom,
+        .minimumZoomOverride = 1400, .defaultZoomOverride = 1800, .maximumZoomOverride = 2400,
+    };
+    T_ASSERT(CL_GameCameraZoomPolicy(&policy, 1650, 3000));
+    T_FEQ(policy.minimum, 1400, 0.001f);
+    T_FEQ(policy.default_distance, 1800, 0.001f);
+    T_FEQ(policy.maximum, 2400, 0.001f);
+    world.info = old_info;
+}
+
 static void W3_TestWriteLE16(uint8_t *p, uint16_t value) {
     p[0] = (uint8_t)value;
     p[1] = (uint8_t)(value >> 8);

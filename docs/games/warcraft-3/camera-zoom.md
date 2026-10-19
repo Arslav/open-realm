@@ -1,14 +1,18 @@
 # Warcraft III Reforged camera zoom
 
-OpenRealm keeps Reforged's player-controlled camera zoom policy separate from scripted JASS camera fields.
+OpenRealm keeps player-controlled camera zoom policy separate from scripted JASS camera fields.
 
-## Retail policy represented here
+## Interactive policy
 
 The player preferences are:
 
 - default camera distance: `1650` by default;
 - maximum camera distance: `3000` by default;
-- interactive minimum: `1250` unless a map forces another value.
+- interactive minimum: `1250 / 1.2` (about `1042`) unless a map forces another value.
+
+OpenRealm extends the nearest interactive zoom by 20% in apparent scale relative to Reforged's `1250`
+minimum: divide distance by `1.2`, keeping FOV unchanged. This game-owned tuning applies equally to
+tablet pinch, mouse wheel and keyboard zoom. Default and farthest distances retain their existing values.
 
 Warcraft III W3I format 32 adds default/max zoom override values and format 33 adds the minimum value.  The values are authoritative only when the corresponding map flags are set:
 
@@ -30,7 +34,7 @@ The WC3 default config binds:
 
 Wheel zoom is ignored while the pointer is over a gameplay UI layout or client-managed window. Page Up/Page Down remain keyboard controls when a nonmodal window is open; modal windows block them through the normal gameplay-input gate.
 
-The generic `zoom` command asks the selected game for its zoom policy before falling back to the legacy generic `camera_min_distance` / `camera_max_distance` cvars.  The WC3 config currently uses `zoom_speed 100` world units per discrete key/wheel notch.  That step is an OpenRealm input-tuning value, not a claimed retail constant; the retail-compatible constraints are the resolved min/default/max values and controls.
+The generic `zoom` command asks the selected game for its zoom policy before falling back to the legacy generic `camera_min_distance` / `camera_max_distance` cvars.  The WC3 config currently uses `zoom_speed 100` world units per discrete key/wheel notch.  Both that step and the extended nearest zoom are OpenRealm tuning values; W3I force flags still resolve the effective min/default/max limits.
 
 ## Scripted camera fields are intentionally separate
 
@@ -55,3 +59,11 @@ JASS camera fields
 The archived player default is client-local, while the initial WC3 camera sample and JASS `ResetToGameCamera` are server-authored.  This patch does not add a new network/userinfo contract solely to transmit the player's preferred default distance to the server.  As a result, maps without a forced default still spawn/reset through the established `1650` server default until the player uses interactive zoom/F5.  Map-forced defaults are applied on both sides because they are part of authoritative W3I data.
 
 A future implementation can close the per-player start/reset gap only after defining a typed client-to-server preference contract; do not make the generic server inspect WC3 cvar names or clamp scripted camera fields as a shortcut.
+
+## Verification
+
+`wc3_camera.closer_interactive_zoom_preserves_map_limits` checks the 20% scale increase and explicit W3I
+min/default/max overrides. `client_touch.pinch_coalesces_motion_clamps_zoom_and_never_releases_an_order`
+drives SDL pinch input through the client and verifies the transmitted distance clamps to the game policy.
+
+See also [tablet controls](tablet-controls.md).

@@ -1654,6 +1654,25 @@ static void SCR_LayoutApplyOrderQueueModifier(uiFrame_t const *frame, char *comm
     strlcat(command, " queue", size);
 }
 
+/* Both normal release and gesture cancellation must end held commands without executing a click. */
+static bool SCR_LayoutReleaseHeldCommand(void) {
+    char command[sizeof(layout_held_command)];
+    if (!layout_held_command[0]) return false;
+    strlcpy(command, layout_held_command, sizeof(command));
+    command[0] = '-';
+    layout_held_command[0] = '\0';
+    MSG_WriteByte(&cls.netchan.message, clc_stringcmd);
+    SZ_Printf(&cls.netchan.message, "%s", command);
+    return true;
+}
+
+/* Keep hover/tooltip state, but a cancelled contact can never activate its source on release. */
+void SCR_LayoutCancelPress(void) {
+    layout_left_down = false;
+    layout_press_frame = layout_right_press_frame = 0;
+    SCR_LayoutReleaseHeldCommand();
+}
+
 bool SCR_LayoutMouseEvent(layoutMouseEvent_t const *mouse_event) {
     menuMouseEvent_t const event = mouse_event->event;
     int const x = mouse_event->x;
@@ -1739,15 +1758,7 @@ bool SCR_LayoutMouseEvent(layoutMouseEvent_t const *mouse_event) {
     bool const matched = hovered_frame && layout_press_frame == hovered_frame->number &&
                          layout_press_layer == layout_hovered_layer;
     layout_press_frame = 0;
-    if (layout_held_command[0]) {
-        char command[sizeof(layout_held_command)];
-        strlcpy(command, layout_held_command, sizeof(command));
-        command[0] = '-';
-        layout_held_command[0] = '\0';
-        MSG_WriteByte(&cls.netchan.message, clc_stringcmd);
-        SZ_Printf(&cls.netchan.message, "%s", command);
-        return false;
-    }
+    if (SCR_LayoutReleaseHeldCommand()) return false;
 
     if (!matched) return false;
     FOR_LOOP(layer, MAX_LAYOUT_LAYERS) {

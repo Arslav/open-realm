@@ -7,6 +7,16 @@ Pan, edge scrolling, relative mouse look, zoom, movement buttons, hover, and sel
 `cl_selection.c` owns numbered groups and selection hints; `cl_control_groups.c` owns their append/reset helpers.
 Game configs choose bindings and independent limits rather than an RTS/orbit mode.
 
+Drag pan retains the previous screen point and traces both old and new points against the same rendered
+projection. Only their difference advances the predicted focus. A fixed world anchor combined with an
+already predicted origin reapplies old travel when separate input pumps share a projection; per-pump
+event coalescing alone does not prevent that jitter. The screen baseline advances on clamping or trace
+misses as well, so resumed/reversed input cannot accumulate a catch-up jump.
+
+Direct-touch context taps are opt-in through `cl_touch_command`; games receive pick results and decide
+selection/order/targeting behavior. See [tablet controls](../games/warcraft-3/tablet-controls.md) for the
+argument contract, long-hold cancellation, pan/pinch recognition and Warcraft III's profile.
+
 ```mermaid
 flowchart LR
     Config[Game and user config] --> Input[cl_input.c]
@@ -67,6 +77,7 @@ Defaults live in `games/<game>/share/config.cfg`, installed with `make install-s
 | `cl_group_focus` | 1 | 1 | 0 |
 | `cl_camera_scroll_speed` | 1400 world units/s | 350 world units/s | 0 |
 | `cl_camera_edge_scroll` | 1 | 0 | 0 |
+| `cl_touch_edge_margin` (shorter world-view fraction; 0 disables) | 0.06 | 0 | 0 |
 | `cl_camera_pan_plane` | 0: terrain | 1: camera plane | 0 |
 | `cl_camera_min_pitch` / `cl_camera_max_pitch` | -85 / -5 | -85 / -5 | -85 / -35 |
 | `cl_hover_health_only` | 1 | 1 | 0 |

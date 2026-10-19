@@ -9,15 +9,28 @@ mouseEvent_t mouse;
 static keyCode_t mouse_button_keys[8];
 static struct {
     bool active;
-    vec3_t anchor;
+    vec2_t point;
 } camera_drag;
 
 static bool smart_click_active;
 #define BZ_SELECT_DOUBLE_CLICK_MS 500 // milliseconds; shared opt-in same-entity double-click window
+#define BZ_TOUCH_PINCH_SLOP 0.08f // initial-span fraction; reject incidental spacing changes before claiming pinch
+#define BZ_TOUCH_PINCH_BIAS 1.5f // span/center-travel ratio; prefer deliberate pinch while permitting one anchored finger
 static bool cam_west, cam_east, cam_north, cam_south;
+typedef enum { TOUCH_IDLE, TOUCH_PRESS, TOUCH_DRAG, TOUCH_SCROLL, TOUCH_HOLD, TOUCH_CANCEL } touchPhase_t;
+typedef enum { TOUCH_CAMERA_PENDING, TOUCH_CAMERA_PAN, TOUCH_CAMERA_ZOOM } touchCamera_t;
+static struct {
+    touchPhase_t phase;
+    vec2_t down;
+    uint32_t time;
+} touch_press;
 
-static void CL_ScrollFrame(void);
+static void CL_ScrollFrame(uint32_t msec);
 static bool CL_MouseOverGameplayUIAt(int x, int y);
+static void CL_TouchHoldFrame(void);
+static void CL_TouchScrollFrame(void);
+static void CL_UpdateHover(float x, float y);
+static void CL_ZoomSteps(float steps, bool block_over_ui);
 
 static struct {
     uint32_t buttons, sent, last_ms;
@@ -136,6 +149,10 @@ void CL_ResetInput(void) {
     cl.camera_prediction.active = cl.camera_prediction.view = false;
     input.select = input.look = camera_drag.active = smart_click_active = false;
     input.last_select_entity = input.last_select_ms = 0;
+    if (touch_press.phase != TOUCH_IDLE) {
+        touch_press.phase = TOUCH_CANCEL;
+        SCR_LayoutCancelPress();
+    }
     cam_west = cam_east = cam_north = cam_south = false;
     cl.selection.in_progress = false;
     cl.hover_entity = 0;
@@ -148,11 +165,13 @@ static void CL_InputFrame(void) {
     uint32_t now = SDL_GetTicks(), msec = input.last_ms ? MIN(now - input.last_ms, BZ_INPUT_MAX_MSEC) : 0;
     input.last_ms = now;
     if (!CL_GameplayInputReady()) { CL_ResetInput(); return; }
+    CL_TouchHoldFrame();
+    CL_TouchScrollFrame();
     uint32_t bits = input.buttons;
     if (Cvar_Integer("cl_move_mouse", 0) && input.select && input.look) bits |= BZ_MOVE_FORWARD;
     if (bits || input.sent) CL_SendInput(&(inputCmd_t){ .action = BZ_INPUT_MOVE, .move = { bits, msec } });
     input.sent = bits;
-    CL_ScrollFrame();
+    CL_ScrollFrame(msec);
 }
 
 static bool CL_OrderQueueModifierDown(void) {
@@ -188,15 +207,18 @@ static bool CL_TracePan(float x, float y, vec3_t *point) {
 
 
 static void CL_BeginPan(float x, float y) {
+    vec3_t point;
     if (!CL_GameplayInputReady()) {
         camera_drag.active = false;
         return;
     }
-    camera_drag.active = CL_TracePan(x, y, &camera_drag.anchor);
+    camera_drag.active = CL_TracePan(x, y, &point);
+    camera_drag.point = (vec2_t){x, y};
 }
 
+/* Trace old and new pointer positions in the same rendered view; prediction may already be ahead of that view. */
 static void CL_UpdatePan(float x, float y) {
-    vec3_t point;
+    vec3_t start, end;
     vec2_t position;
 
     if (!CL_GameplayInputReady()) {
@@ -207,12 +229,15 @@ static void CL_UpdatePan(float x, float y) {
         CL_BeginPan(x, y);
         return;
     }
-    if (!CL_TracePan(x, y, &point)) {
-        return;
-    }
+    vec2_t previous = camera_drag.point;
+    camera_drag.point = (vec2_t){x, y};
+    if (previous.x == x && previous.y == y) return;
+    if (!CL_TracePan(previous.x, previous.y, &start) || !CL_TracePan(x, y, &end)) return;
 
-    position.x = cl.viewDef.camerastate[0].origin.x + camera_drag.anchor.x - point.x;
-    position.y = cl.viewDef.camerastate[0].origin.y + camera_drag.anchor.y - point.y;
+    /* A fixed world anchor replayed prior travel when several input pumps shared a projection,
+     * or when the rendered terrain/camera base changed. Only this pointer increment belongs to this input. */
+    position.x = cl.viewDef.camerastate[0].origin.x + start.x - end.x;
+    position.y = cl.viewDef.camerastate[0].origin.y + start.y - end.y;
     CL_SetCameraPosition(position);
 }
 
@@ -220,12 +245,8 @@ static void CL_EndPan(void) {
     camera_drag.active = false;
 }
 
-/* The pan trace uses the view matrix built at the last render while
- * CL_SetCameraPosition moves the camera origin immediately, so a second pan
- * update in the same input pass would re-apply the whole offset (two fingers
- * send one motion event each per frame: the pan then overshoots, oscillates,
- * and runs off to the map edge). Motion only records the latest pan point;
- * CL_Input applies it once after draining SDL events. */
+/* Coalesce both contacts into one midpoint sample per input pump. Relative pointer traces also
+ * keep separate pumps correct when rendering has not yet produced a new projection matrix. */
 static struct {
     bool pending;
     vec2_t point;
@@ -254,6 +275,9 @@ static struct {
     vec2_t pos[2];
     uint32_t count;
     bool gesture;
+    float span;
+    vec2_t down;
+    touchCamera_t mode;
 } touch_pan;
 
 static bool CL_TouchIsDirect(SDL_TouchID touch) {
@@ -264,6 +288,32 @@ static bool (*touch_is_direct)(SDL_TouchID) = CL_TouchIsDirect;
 static vec2_t CL_TouchPanCenter(void) {
     return (vec2_t){ (touch_pan.pos[0].x + touch_pan.pos[1].x) * 0.5f,
                      (touch_pan.pos[0].y + touch_pan.pos[1].y) * 0.5f };
+}
+
+/* Flush once after both contacts report motion, including motion immediately followed by release. */
+static void CL_FlushTouchMotion(void) {
+    if (camera_drag.active && touch_pan.gesture && touch_pan.count == 2) {
+        float span = Vector2_distance(&touch_pan.pos[0], &touch_pan.pos[1]);
+        if (!*Cvar_String("cl_touch_command", "")) touch_pan.mode = TOUCH_CAMERA_PAN;
+        if (touch_pan.mode == TOUCH_CAMERA_PENDING) {
+            vec2_t center = CL_TouchPanCenter();
+            float travel = Vector2_distance(&center, &touch_pan.down);
+            float spread = fabsf(span - touch_pan.span), slop = MAX(1, Cvar_Value("cl_click_threshold", 10));
+            /* Raw span changes previously zoomed every pan, while centroid drift also moved every pinch.
+             * Claim one intent from the initial contacts and keep it until this pair is released. */
+            if (spread >= MAX(slop, touch_pan.span * BZ_TOUCH_PINCH_SLOP) && spread >= travel * BZ_TOUCH_PINCH_BIAS)
+                touch_pan.mode = TOUCH_CAMERA_ZOOM;
+            else if (travel >= slop)
+                touch_pan.mode = TOUCH_CAMERA_PAN;
+        }
+        if (touch_pan.mode != TOUCH_CAMERA_PAN) pan_motion.pending = false;
+        if (touch_pan.mode == TOUCH_CAMERA_ZOOM && touch_pan.span > 0 && span > 0 && span != touch_pan.span) {
+            float speed = Cvar_Value("zoom_speed", 1);
+            if (speed > 0) CL_ZoomSteps(cl.viewDef.camerastate[0].distance * (1 - touch_pan.span / span) / speed, false);
+            touch_pan.span = span;
+        }
+    }
+    CL_FlushPan();
 }
 
 static void CL_TouchFingerEvent(SDL_TouchFingerEvent const *finger) {
@@ -280,11 +330,19 @@ static void CL_TouchFingerEvent(SDL_TouchFingerEvent const *finger) {
             touch_pan.pos[touch_pan.count++] = pos;
             if (touch_pan.count == 2 && CL_GameplayInputReady()) {
                 touch_pan.gesture = true;
+                touch_press.phase = TOUCH_CANCEL;
                 input.select = false;
                 cl.selection.in_progress = false;
                 CL_EndMinimapDrag();
+                /* A second contact cancels a pending HUD click as well as a world tap. */
+                SCR_LayoutCancelPress();
                 vec2_t center = CL_TouchPanCenter();
-                CL_BeginPan(center.x, center.y);
+                touch_pan.span = Vector2_distance(&touch_pan.pos[0], &touch_pan.pos[1]);
+                touch_pan.down = center;
+                touch_pan.mode = TOUCH_CAMERA_PENDING;
+                if (!CL_MouseOverGameplayUIAt(touch_pan.pos[0].x, touch_pan.pos[0].y) &&
+                    !CL_MouseOverGameplayUIAt(touch_pan.pos[1].x, touch_pan.pos[1].y))
+                    CL_BeginPan(center.x, center.y);
             }
             break;
         case SDL_FINGERMOTION:
@@ -297,6 +355,14 @@ static void CL_TouchFingerEvent(SDL_TouchFingerEvent const *finger) {
             break;
         case SDL_FINGERUP:
             if (slot < 0) return;
+            if (touch_pan.gesture && touch_pan.count == 2) {
+                if (Vector2_distance(&pos, &touch_pan.pos[slot]) > 0) {
+                    touch_pan.pos[slot] = pos;
+                    vec2_t center = CL_TouchPanCenter();
+                    CL_QueuePan(center.x, center.y);
+                }
+                CL_FlushTouchMotion();
+            }
             touch_pan.id[slot] = touch_pan.id[touch_pan.count - 1];
             touch_pan.pos[slot] = touch_pan.pos[touch_pan.count - 1];
             if (--touch_pan.count < 2 && touch_pan.gesture) CL_EndPan();
@@ -312,6 +378,33 @@ static bool CL_TouchGestureOwnsMouse(SDL_Event const *event) {
     if (event->type == SDL_MOUSEMOTION) return event->motion.which == SDL_TOUCH_MOUSEID;
     if (event->type == SDL_MOUSEBUTTONDOWN) return event->button.which == SDL_TOUCH_MOUSEID;
     return false;
+}
+
+/* Holding exposes the existing hover/tooltip presentation without activating its release command. */
+static void CL_TouchHoldFrame(void) {
+    if (touch_press.phase != TOUCH_PRESS || !CL_GameplayInputReady() ||
+        SDL_GetTicks() - touch_press.time < (uint32_t)MAX(0, Cvar_Integer("cl_touch_hold_ms", 500))) return;
+    touch_press.phase = TOUCH_HOLD;
+    input.select = false;
+    cl.selection.in_progress = false;
+    CL_EndMinimapDrag();
+    SCR_LayoutCancelPress();
+    SCR_LayoutMouseEvent(&(layoutMouseEvent_t){ MENU_MOUSE_MOVE, mouse.origin.x, mouse.origin.y, 0, false });
+    CL_UpdateHover(mouse.origin.x, mouse.origin.y);
+}
+
+/* The game receives pick results and owns selection, context orders and active target-mode rules. */
+static bool CL_SendTouchTap(void) {
+    cstring_t command = Cvar_String("cl_touch_command", "");
+    uint32_t entity = 0;
+    vec3_t point = {0};
+    if (!input.touch_pointer || !*command) return false;
+    if (touch_press.phase != TOUCH_PRESS) return touch_press.phase != TOUCH_IDLE;
+    if (!re.TraceEntity(&cl.viewDef, mouse.origin.x, mouse.origin.y, &entity)) entity = 0;
+    bool ground = re.TraceLocation(&cl.viewDef, mouse.origin.x, mouse.origin.y, &point);
+    MSG_WriteByte(&cls.netchan.message, clc_stringcmd);
+    SZ_Printf(&cls.netchan.message, "%s %u %u %d %d", command, entity, ground, (int)point.x, (int)point.y);
+    return true;
 }
 
 static void CL_SendSmartPointCommand(float x, float y) {
@@ -474,6 +567,7 @@ static void CL_MouseMotion(SDL_MouseMotionEvent const *motion) {
         CL_QueuePan(motion->x, motion->y);
     }
     CL_UpdateMinimapDrag(motion->x, motion->y);
+    CL_TouchScrollFrame();
     if (cl.selection.in_progress && CL_SelectionLimit() > 1) {
         cl.selection.rect.w = motion->x - cl.selection.rect.x;
         cl.selection.rect.h = motion->y - cl.selection.rect.y;
@@ -486,27 +580,42 @@ bool CL_MouseCaptured(void) { return camera_drag.active || input.look; }
 
 vec2_t CL_MouseScroll(void) {
     vec2_t dir = {0};
-    if (!CL_GameplayInputReady() || input.touch_pointer || input.look || camera_drag.active ||
+    if (!CL_GameplayInputReady() || input.look || camera_drag.active ||
         Cvar_Value("cl_camera_edge_scroll", 0) == 0)
         return dir;
     size2_t win = re.GetWindowSize();
     float x = mouse.origin.x, y = mouse.origin.y, margin = Cvar_Value("cl_camera_edge_margin", 6);
+    rect_t edge = { 0, 0, win.width, win.height };
     if (win.width <= 0 || win.height <= 0 || x < 0 || y < 0 || x >= win.width || y >= win.height)
         return dir;
-    if (x <= margin) dir.x -= 1;
-    if (x >= win.width - 1 - margin) dir.x += 1;
-    if (y <= margin) dir.y += 1;
-    if (y >= win.height - 1 - margin) dir.y -= 1;
+    if (input.touch_pointer) {
+        if (touch_press.phase != TOUCH_SCROLL && (touch_press.phase != TOUCH_DRAG || !input.select)) return dir;
+        edge = (rect_t){ .x = cl.viewDef.viewport.x * win.width,
+            .y = (1 - cl.viewDef.viewport.y - cl.viewDef.viewport.h) * win.height,
+            .w = cl.viewDef.viewport.w * win.width, .h = cl.viewDef.viewport.h * win.height };
+        margin = MAX(0, MIN(0.25f, Cvar_Value("cl_touch_edge_margin", 0))) * MIN(edge.w, edge.h);
+        if (margin <= 0) return dir;
+    }
+    if (x <= edge.x + margin) dir.x -= 1;
+    if (x >= edge.x + edge.w - 1 - margin) dir.x += 1;
+    if (y <= edge.y + margin) dir.y += 1;
+    if (y >= edge.y + edge.h - 1 - margin) dir.y -= 1;
     return dir;
 }
 
+/* An edge drag captures the contact until release; returning to the center cannot select or issue an order. */
+static void CL_TouchScrollFrame(void) {
+    if (!input.touch_pointer || touch_press.phase != TOUCH_DRAG) return;
+    vec2_t dir = CL_MouseScroll();
+    if (!dir.x && !dir.y) return;
+    touch_press.phase = TOUCH_SCROLL;
+    input.select = smart_click_active = cl.selection.in_progress = false;
+    SCR_LayoutCancelPress();
+}
+
 /* Arrow and edge input follow the orbit yaw, so scrolling stays screen-relative after rotation. */
-static void CL_ScrollFrame(void) {
-    static uint32_t last_ms = 0;
-    uint32_t now = SDL_GetTicks();
-    float dt = (last_ms && now > last_ms) ? (now - last_ms) / 1000.0f : 0.0f;
-    last_ms = now;
-    if (dt > 0.1f) dt = 0.1f; /* clamp after a stall */
+static void CL_ScrollFrame(uint32_t msec) {
+    float dt = MIN(msec / 1000.0f, 0.1f); /* Use the same input interval; clamp camera travel after a stall. */
 
     /* A server-authored modal owns input completely; terminate any world drag
      * that began before the modal arrived. */
@@ -682,6 +791,36 @@ void CL_Input(void) {
             continue;
         }
         if (CL_TouchGestureOwnsMouse(&event)) continue;
+        if (event.type == SDL_MOUSEBUTTONDOWN && event.button.which == SDL_TOUCH_MOUSEID &&
+            event.button.button == SDL_BUTTON_LEFT && *Cvar_String("cl_touch_command", "") &&
+            CL_GameplayInputReady() && !CL_WindowMouseOver(event.button.x, event.button.y))
+            touch_press = (__typeof__(touch_press)){ .phase = TOUCH_PRESS,
+                .down = { event.button.x, event.button.y }, .time = event.button.timestamp };
+        if (event.type == SDL_MOUSEMOTION && event.motion.which == SDL_TOUCH_MOUSEID &&
+            touch_press.phase == TOUCH_PRESS && !CL_ClickTravel((vec2_t){
+                event.motion.x - touch_press.down.x, event.motion.y - touch_press.down.y }))
+            touch_press.phase = TOUCH_DRAG;
+        if (event.type == SDL_MOUSEBUTTONUP && event.button.which == SDL_TOUCH_MOUSEID &&
+            event.button.button == SDL_BUTTON_LEFT) {
+            mouse.origin = (vec2_t){ event.button.x, event.button.y };
+            if (touch_press.phase == TOUCH_PRESS && !CL_ClickTravel((vec2_t){
+                    event.button.x - touch_press.down.x, event.button.y - touch_press.down.y }))
+                touch_press.phase = TOUCH_DRAG;
+            CL_TouchScrollFrame();
+            CL_TouchHoldFrame();
+            /* Held/cancelled contacts release bindings and explicitly cancel pending HUD activation. */
+            if (touch_press.phase == TOUCH_HOLD || touch_press.phase == TOUCH_CANCEL || touch_press.phase == TOUCH_SCROLL) {
+                input.select = smart_click_active = cl.selection.in_progress = false;
+                if (mouse_button_keys[SDL_BUTTON_LEFT])
+                    CL_InputKeyEvent(mouse_button_keys[SDL_BUTTON_LEFT], 0, false, event.button.timestamp);
+                mouse_button_keys[SDL_BUTTON_LEFT] = 0;
+                SCR_LayoutCancelPress();
+                SCR_LayoutMouseEvent(&(layoutMouseEvent_t){ MENU_MOUSE_MOVE, mouse.origin.x, mouse.origin.y, 0, false });
+                mouse.button = 0;
+                touch_press.phase = TOUCH_IDLE;
+                continue;
+            }
+        }
         switch(event.type) {
             case SDL_FINGERDOWN:
             case SDL_FINGERMOTION:
@@ -852,8 +991,10 @@ void CL_Input(void) {
                 if (CL_WindowEvent(&event.window)) return;
                 break;
         }
+        if (event.type == SDL_MOUSEBUTTONUP && event.button.which == SDL_TOUCH_MOUSEID &&
+            event.button.button == SDL_BUTTON_LEFT) touch_press.phase = TOUCH_IDLE;
     }
-    CL_FlushPan();
+    CL_FlushTouchMotion();
     if (hover_update_pending) CL_UpdateHover((float)hover_motion.x, (float)hover_motion.y);
     CL_InputFrame();
 }
@@ -960,6 +1101,12 @@ void IN_SelectUp(void) {
     input.select = false;
     /* Release the shared drag before either selection path can return. */
     CL_EndMinimapDrag();
+    if (held && CL_GameplayInputReady() && !CL_MouseOverGameplayUI() &&
+        touch_press.phase == TOUCH_PRESS && CL_SendTouchTap()) {
+        cl.selection.in_progress = false;
+        CL_ResetSelectClickChain();
+        return;
+    }
     if (CL_SelectionLimit() == 1) {
         if (!held || !CL_GameplayInputReady() || CL_MouseOverGameplayUI()) return;
         vec2_t delta = { mouse.origin.x - input.down.x, mouse.origin.y - input.down.y };
@@ -979,7 +1126,7 @@ void IN_SelectUp(void) {
     cl.selection.in_progress = false;
     uint32_t entnum;
     vec3_t point;
-    if (fabs(r.w)+fabs(r.h) < 10) {
+    if (touch_press.phase != TOUCH_DRAG && fabs(r.w)+fabs(r.h) < 10) {
         SDL_Keymod const mods = SDL_GetModState();
         bool const queue = (mods & (KMOD_LSHIFT | KMOD_RSHIFT)) != 0;
         if (re.TraceEntity(&cl.viewDef, r.x, r.y, &entnum)) {
@@ -1133,6 +1280,9 @@ void CL_InitInput(void) {
     Cvar_Get("cl_camera_min_pitch", "-85", 0);
     Cvar_Get("cl_camera_max_pitch", "85", 0);
     Cvar_Get("cl_click_threshold", "10", 0);
+    Cvar_Get("cl_touch_command", "", 0);
+    Cvar_Get("cl_touch_hold_ms", "500", CVAR_ARCHIVE);
+    Cvar_Get("cl_touch_edge_margin", "0", CVAR_ARCHIVE);
     /* Old configs store pitch as wrapped negative degrees; convert the interval once at startup. */
     float lo = Cvar_Value("cl_camera_min_pitch", -85), hi = Cvar_Value("cl_camera_max_pitch", 85);
     if (lo > 180 || hi > 180) {
@@ -1925,6 +2075,9 @@ TEST(client_input, minimap_sdl_click_drag_release_over_hud) {
 }
 
 static bool CL_TestTouchDirect(SDL_TouchID touch) { (void)touch; return true; }
+static bool CL_TestNoEntity(viewDef_t const *view, float x, float y, uint32_t *number) {
+    (void)view; (void)x; (void)y; *number = 0; return false;
+}
 static bool CL_TestScreenGround(viewDef_t const *view, float x, float y, vec3_t *point) {
     (void)view; *point = (vec3_t){ x, 768 - y, 0 }; return true;
 }
@@ -1939,6 +2092,454 @@ static uint32_t CL_TestCountFocus(sizeBuf_t *msg, inputCmd_t *last) {
     }
     return n;
 }
+
+/* Run SDL touch sequences against real bindings/layout dispatch with isolated client state. */
+static void CL_TestTouchSequence(void (*run)(void)) {
+    struct client_state *saved = MemAlloc(sizeof(cl));
+    struct client_static old_cls = cls;
+    refExport_t old_re = re;
+    __typeof__(input) old_input = input;
+    __typeof__(touch_press) old_press = touch_press;
+    __typeof__(touch_pan) old_pan = touch_pan;
+    mouseEvent_t old_mouse = mouse;
+    bool (*old_direct)(SDL_TouchID) = touch_is_direct;
+    SDL_Keymod mods = SDL_GetModState();
+    char binding[128], command[128];
+    float edge = Cvar_Value("cl_camera_edge_scroll", 0), hold = Cvar_Value("cl_touch_hold_ms", 500);
+    float hover = Cvar_Value("cl_hover_health_only", 1), limit = Cvar_Value("cl_selection_limit", 64);
+    float margin = Cvar_Value("cl_touch_edge_margin", 0), speed = Cvar_Value("cl_camera_scroll_speed", 0);
+    bool add_down = !Cmd_Exists("+select"), add_up = !Cmd_Exists("-select");
+    uint8_t data[4096];
+    memcpy(saved, &cl, sizeof(cl));
+    CL_TestWorldBounds(true);
+    strlcpy(binding, Key_GetBinding(K_MOUSE1, 0), sizeof(binding));
+    strlcpy(command, Cvar_String("cl_touch_command", ""), sizeof(command));
+    T_EQ(SDL_InitSubSystem(SDL_INIT_EVENTS), 0);
+    SDL_FlushEvents(SDL_FIRSTEVENT, SDL_LASTEVENT); SDL_SetModState(KMOD_NONE);
+    if (add_down) Cmd_AddCommand("+select", IN_SelectDown);
+    if (add_up) Cmd_AddCommand("-select", IN_SelectUp);
+    Key_SetBinding(K_MOUSE1, 0, "+select");
+    Cvar_Set("cl_touch_command", "testtap"); Cvar_Set("cl_touch_hold_ms", "500");
+    Cvar_Set("cl_camera_edge_scroll", "0"); Cvar_Set("cl_hover_health_only", "0");
+    Cvar_Set("cl_selection_limit", "24");
+    memset(&cl, 0, sizeof(cl)); input = (__typeof__(input)){ .focus = true };
+    touch_press = (__typeof__(touch_press)){0}; touch_pan = (__typeof__(touch_pan)){0};
+    touch_is_direct = CL_TestTouchDirect;
+    cls.state = ca_active; cls.key_dest = key_game; cl.playerstate.client_ui_state = CLIENT_UI_GAME;
+    re.TraceMinimap = CL_TestNoMinimap; re.TraceEntity = CL_TestSelectEntity;
+    re.TraceLocation = CL_TestSmartLocation; re.EntitiesInRect = CL_TestEntitiesInRect;
+    re.GetWindowSize = CL_TestWindowSize;
+    re.CameraUsesTerrainHeight = CL_TestCameraUsesTerrainHeight;
+    FOR_LOOP(i, MAX_LAYOUT_LAYERS) SCR_ClearLayoutLayer(i);
+    SZ_Init(&cls.netchan.message, data, sizeof(data));
+    run();
+    CL_ResetInput(); touch_press.phase = TOUCH_IDLE;
+    cl = *saved; MemFree(saved); cls = old_cls; re = old_re; input = old_input; mouse = old_mouse;
+    touch_press = old_press; touch_pan = old_pan; touch_is_direct = old_direct;
+    FOR_LOOP(i, MAX_LAYOUT_LAYERS) SCR_SetLayoutLayer(i, cl.layout[i]);
+    Key_SetBinding(K_MOUSE1, 0, binding); SDL_SetModState(mods);
+    if (add_down) Cmd_RemoveCommand("+select");
+    if (add_up) Cmd_RemoveCommand("-select");
+    Cvar_Set("cl_touch_command", command); Cvar_SetValue("cl_touch_hold_ms", hold);
+    Cvar_SetValue("cl_camera_edge_scroll", edge); Cvar_SetValue("cl_hover_health_only", hover);
+    Cvar_SetValue("cl_selection_limit", limit); SDL_QuitSubSystem(SDL_INIT_EVENTS);
+    Cvar_SetValue("cl_touch_edge_margin", margin); Cvar_SetValue("cl_camera_scroll_speed", speed);
+    CL_TestWorldBounds(false);
+}
+
+static void CL_TestTouchMouse(uint32_t type, int x, int y) {
+    SDL_Event event = { .button = { .type = type, .which = SDL_TOUCH_MOUSEID,
+        .button = SDL_BUTTON_LEFT, .x = x, .y = y } };
+    if (type == SDL_MOUSEMOTION)
+        event = (SDL_Event){ .motion = { .type = type, .which = SDL_TOUCH_MOUSEID, .x = x, .y = y } };
+    T_EQ(SDL_PushEvent(&event), 1); CL_Input();
+}
+
+static void CL_TestTouchTapSequence(void) {
+    char command[128];
+    CL_TestTouchMouse(SDL_MOUSEBUTTONDOWN, 400, 300);
+    T_EQ(cls.netchan.message.cursize, 0);
+    CL_TestTouchMouse(SDL_MOUSEBUTTONUP, 400, 300);
+    T_EQ(MSG_ReadByte(&cls.netchan.message), clc_stringcmd);
+    MSG_ReadString(&cls.netchan.message, command); T_STREQ(command, "testtap 7 1 123 456");
+    T_EQ(cl.selection.num_selected, 0);
+    T_EQ(cls.netchan.message.readcount, cls.netchan.message.cursize);
+    SZ_Clear(&cls.netchan.message); cls.netchan.message.readcount = 0; re.TraceEntity = CL_TestNoEntity;
+    CL_TestTouchMouse(SDL_MOUSEBUTTONDOWN, 400, 300);
+    CL_TestTouchMouse(SDL_MOUSEBUTTONUP, 400, 300);
+    T_EQ(MSG_ReadByte(&cls.netchan.message), clc_stringcmd);
+    MSG_ReadString(&cls.netchan.message, command); T_STREQ(command, "testtap 0 1 123 456");
+    SZ_Clear(&cls.netchan.message); cls.netchan.message.readcount = 0; Cvar_Set("cl_touch_command", "");
+    re.TraceEntity = CL_TestSelectEntity;
+    CL_TestTouchMouse(SDL_MOUSEBUTTONDOWN, 400, 300);
+    CL_TestTouchMouse(SDL_MOUSEBUTTONUP, 400, 300);
+    T_EQ(MSG_ReadByte(&cls.netchan.message), clc_stringcmd);
+    MSG_ReadString(&cls.netchan.message, command); T_STREQ(command, "select 7");
+}
+TEST(client_touch, release_dispatches_pick_results_and_profile_is_optional) { CL_TestTouchSequence(CL_TestTouchTapSequence); }
+
+static void CL_TestTouchDragSequence(void) {
+    char command[128];
+    CL_TestTouchMouse(SDL_MOUSEBUTTONDOWN, 400, 300);
+    CL_TestTouchMouse(SDL_MOUSEMOTION, 600, 450);
+    T_EQ(cls.netchan.message.cursize, 0);
+    CL_TestTouchMouse(SDL_MOUSEBUTTONUP, 600, 450);
+    T_EQ(MSG_ReadByte(&cls.netchan.message), clc_stringcmd);
+    MSG_ReadString(&cls.netchan.message, command); T_STREQ(command, "select 7 8 9");
+    T_EQ(cl.selection.num_selected, 3);
+    T_EQ(touch_press.phase, TOUCH_IDLE);
+}
+TEST(client_touch, drag_selects_without_context_order) { CL_TestTouchSequence(CL_TestTouchDragSequence); }
+
+/* Drive a held edge drag through the input pump; camera movement must continue without new motion. */
+static void CL_TestTouchEdgeSequence(void) {
+    Cvar_Set("cl_camera_edge_scroll", "1"); Cvar_Set("cl_touch_edge_margin", "0.06");
+    Cvar_Set("cl_camera_scroll_speed", "1400");
+    cl.viewDef.viewport = (rect_t){ 0, 0.22f, 1, 0.76f };
+    FOR_LOOP(i, 2) cl.viewDef.camerastate[i].origin = (vec3_t){500, 400, 0};
+    cl.selection.entity_nums[0] = 42; cl.selection.num_selected = 1;
+    CL_TestTouchMouse(SDL_MOUSEBUTTONDOWN, 400, 300);
+    T_FEQ(CL_MouseScroll().x, 0, 0.001f);
+    input.last_ms = SDL_GetTicks() - 40;
+    CL_TestTouchMouse(SDL_MOUSEMOTION, 1000, 300);
+    T_FEQ(CL_MouseScroll().x, 1, 0.001f);
+    T_ASSERT(!cl.selection.in_progress);
+    inputCmd_t focus = {0};
+    T_EQ(CL_TestCountFocus(&cls.netchan.message, &focus), 1);
+    T_ASSERT(focus.focus.x > 500);
+    SZ_Clear(&cls.netchan.message); cls.netchan.message.readcount = 0;
+    input.last_ms = SDL_GetTicks() - 40; CL_Input();
+    T_EQ(CL_TestCountFocus(&cls.netchan.message, &focus), 1);
+    SZ_Clear(&cls.netchan.message); cls.netchan.message.readcount = 0;
+    CL_TestTouchMouse(SDL_MOUSEBUTTONUP, 1000, 300);
+    input.last_ms = SDL_GetTicks() - 40; CL_Input();
+    T_EQ(cls.netchan.message.cursize, 0);
+    T_EQ(cl.selection.num_selected, 1); T_EQ(cl.selection.entity_nums[0], 42);
+    T_FEQ(CL_MouseScroll().x, 0, 0.001f);
+}
+TEST(client_touch, edge_drag_scrolls_while_held_and_release_keeps_selection) { CL_TestTouchSequence(CL_TestTouchEdgeSequence); }
+
+static void CL_TestTouchEdgeDirections(void) {
+    Cvar_Set("cl_camera_edge_scroll", "1"); Cvar_Set("cl_touch_edge_margin", "0.06");
+    cl.viewDef.viewport = (rect_t){ 0.1f, 0.2f, 0.8f, 0.7f };
+    /* A stationary touch at an edge still belongs to tap/hold, never camera scrolling. */
+    CL_TestTouchMouse(SDL_MOUSEBUTTONDOWN, 120, 300);
+    T_FEQ(CL_MouseScroll().x, 0, 0.001f);
+    CL_TestTouchMouse(SDL_MOUSEMOTION, 900, 90);
+    T_FEQ(CL_MouseScroll().x, 1, 0.001f); T_FEQ(CL_MouseScroll().y, 1, 0.001f);
+    CL_TestTouchMouse(SDL_MOUSEMOTION, 120, 600);
+    T_FEQ(CL_MouseScroll().x, -1, 0.001f); T_FEQ(CL_MouseScroll().y, -1, 0.001f);
+    CL_TestTouchMouse(SDL_MOUSEMOTION, 512, 740);
+    T_FEQ(CL_MouseScroll().y, -1, 0.001f);
+    CL_TestTouchMouse(SDL_MOUSEMOTION, 512, 300);
+    T_FEQ(CL_MouseScroll().x, 0, 0.001f); T_FEQ(CL_MouseScroll().y, 0, 0.001f);
+    SZ_Clear(&cls.netchan.message); cls.netchan.message.readcount = 0; input.last_ms = 0;
+    CL_TestTouchMouse(SDL_MOUSEBUTTONUP, 512, 300);
+    T_EQ(cls.netchan.message.cursize, 0);
+}
+TEST(client_touch, edge_drag_uses_viewport_corners_and_cannot_turn_back_into_selection) { CL_TestTouchSequence(CL_TestTouchEdgeDirections); }
+
+static void CL_TestTouchEdgeDisabled(void) {
+    Cvar_Set("cl_camera_edge_scroll", "1"); Cvar_Set("cl_touch_edge_margin", "0");
+    cl.viewDef.viewport = (rect_t){ 0, 0, 1, 1 };
+    CL_TestTouchMouse(SDL_MOUSEBUTTONDOWN, 400, 300);
+    CL_TestTouchMouse(SDL_MOUSEMOTION, 1000, 300);
+    T_FEQ(CL_MouseScroll().x, 0, 0.001f); T_ASSERT(cl.selection.in_progress);
+    CL_TestTouchMouse(SDL_MOUSEBUTTONUP, 1000, 300);
+    char command[128];
+    T_EQ(MSG_ReadByte(&cls.netchan.message), clc_stringcmd);
+    MSG_ReadString(&cls.netchan.message, command); T_STREQ(command, "select 7 8 9");
+}
+TEST(client_touch, zero_edge_margin_preserves_rectangle_selection) { CL_TestTouchSequence(CL_TestTouchEdgeDisabled); }
+
+static void CL_TestTouchEdgeHud(void) {
+    Cvar_Set("cl_camera_edge_scroll", "1"); Cvar_Set("cl_touch_edge_margin", "0.06");
+    cl.viewDef.viewport = (rect_t){ 0, 0, 1, 1 };
+    uint8_t packet[512]; sizeBuf_t msg;
+    uiFrame_t empty = {0}, frame = { .number = 1, .flags.type = FT_COMMANDBUTTON,
+        .size = { UI_BASE_WIDTH, UI_BASE_HEIGHT }, .onclick = "button TestAbility", .tooltip = "Ability description" };
+    SZ_Init(&msg, packet, sizeof(packet)); MSG_WriteByte(&msg, LAYER_CONSOLE);
+    MSG_WriteDeltaUIFrame(&msg, &empty, &frame, true); MSG_WriteByte(&msg, 0);
+    MSG_WriteLong(&msg, 0); MSG_WriteShort(&msg, 0); CL_ParseLayout(&msg);
+    CL_TestTouchMouse(SDL_MOUSEBUTTONDOWN, 400, 300);
+    CL_TestTouchMouse(SDL_MOUSEMOTION, 1000, 300);
+    T_FEQ(CL_MouseScroll().x, 0, 0.001f);
+    T_EQ(cls.netchan.message.cursize, 0);
+    CL_TestTouchMouse(SDL_MOUSEBUTTONUP, 1000, 300);
+    char command[128];
+    T_EQ(MSG_ReadByte(&cls.netchan.message), clc_stringcmd);
+    MSG_ReadString(&cls.netchan.message, command); T_STREQ(command, "button TestAbility");
+}
+TEST(client_touch, dragging_hud_button_never_captures_camera) { CL_TestTouchSequence(CL_TestTouchEdgeHud); }
+
+static void CL_TestTouchHoldSequence(void) {
+    CL_TestTouchMouse(SDL_MOUSEBUTTONDOWN, 400, 300);
+    touch_press.time -= 600;
+    CL_Input();
+    T_EQ(cl.hover_entity, 7);
+    T_ASSERT(!cl.selection.in_progress);
+    CL_TestTouchMouse(SDL_MOUSEBUTTONUP, 400, 300);
+    T_EQ(cls.netchan.message.cursize, 0);
+    CL_TestTouchMouse(SDL_MOUSEBUTTONDOWN, 400, 300);
+    SDL_Event event = { .window = { .type = SDL_WINDOWEVENT, .event = SDL_WINDOWEVENT_FOCUS_LOST } };
+    T_EQ(SDL_PushEvent(&event), 1); CL_Input();
+    event.window.event = SDL_WINDOWEVENT_FOCUS_GAINED;
+    T_EQ(SDL_PushEvent(&event), 1); CL_Input();
+    CL_TestTouchMouse(SDL_MOUSEBUTTONUP, 400, 300);
+    char command[128];
+    T_EQ(MSG_ReadByte(&cls.netchan.message), clc_stringcmd);
+    MSG_ReadString(&cls.netchan.message, command); T_STREQ(command, CL_GameOrderQueueReleaseCommand());
+    T_EQ(cls.netchan.message.readcount, cls.netchan.message.cursize);
+}
+TEST(client_touch, hold_inspects_and_focus_loss_cancels_release) { CL_TestTouchSequence(CL_TestTouchHoldSequence); }
+
+static void CL_TestTouchHudSequence(void) {
+    uint8_t packet[512]; sizeBuf_t msg;
+    uiFrame_t empty = {0}, frame = { .number = 1, .flags.type = FT_COMMANDBUTTON,
+        .size = { UI_BASE_WIDTH, UI_BASE_HEIGHT }, .onclick = "button TestAbility", .tooltip = "Ability description" };
+    SZ_Init(&msg, packet, sizeof(packet)); MSG_WriteByte(&msg, LAYER_CONSOLE);
+    MSG_WriteDeltaUIFrame(&msg, &empty, &frame, true); MSG_WriteByte(&msg, 0);
+    MSG_WriteLong(&msg, 0); MSG_WriteShort(&msg, 0); CL_ParseLayout(&msg);
+    T_ASSERT(SCR_LayoutHitTest(400, 300));
+    CL_TestTouchMouse(SDL_MOUSEBUTTONDOWN, 400, 300);
+    touch_press.time -= 600; CL_Input();
+    CL_TestTouchMouse(SDL_MOUSEBUTTONUP, 400, 300);
+    T_EQ(cls.netchan.message.cursize, 0);
+    CL_TestTouchMouse(SDL_MOUSEBUTTONDOWN, 400, 300);
+    CL_TestTouchMouse(SDL_MOUSEBUTTONUP, 400, 300);
+    char command[128];
+    T_EQ(MSG_ReadByte(&cls.netchan.message), clc_stringcmd);
+    MSG_ReadString(&cls.netchan.message, command); T_STREQ(command, "button TestAbility");
+    T_EQ(cls.netchan.message.readcount, cls.netchan.message.cursize);
+}
+TEST(client_touch, hud_hold_does_not_activate_ability_and_next_tap_still_works) { CL_TestTouchSequence(CL_TestTouchHudSequence); }
+
+static void CL_TestTouchFinger(uint32_t type, SDL_FingerID id, vec2_t pos) {
+    SDL_Event event = { .tfinger = { .type = type, .touchId = 1, .fingerId = id, .x = pos.x, .y = pos.y } };
+    T_EQ(SDL_PushEvent(&event), 1);
+}
+
+/* A translated flat projection stays fixed between renders while input prediction can already move. */
+static bool CL_TestRenderedGround(viewDef_t const *view, float x, float y, vec3_t *point) {
+    *point = (vec3_t){ view->target.x + x - 512, view->target.y + 384 - y, view->target.z };
+    return true;
+}
+
+static bool CL_TestGroundGap(viewDef_t const *view, float x, float y, vec3_t *point) {
+    return (x < 540 || x > 560) && CL_TestRenderedGround(view, x, y, point);
+}
+
+/* Both camera gestures start from the same contacts and rendered camera fixture. */
+static void CL_TestTouchCameraBegin(vec3_t origin) {
+    cl.viewDef.target = origin;
+    FOR_LOOP(i, 2) {
+        cl.viewDef.camerastate[i].origin = origin;
+        cl.viewDef.camerastate[i].distance = 2000;
+    }
+    CL_TestTouchFinger(SDL_FINGERDOWN, 1, (vec2_t){0.4f, 0.5f});
+    CL_TestTouchMouse(SDL_MOUSEBUTTONDOWN, 410, 384);
+    CL_TestTouchFinger(SDL_FINGERDOWN, 2, (vec2_t){0.6f, 0.5f}); CL_Input();
+    T_EQ(cls.netchan.message.cursize, 0);
+}
+
+static void CL_TestTouchCameraStart(void) {
+    re.TraceLocation = CL_TestScreenGround;
+    CL_TestTouchCameraBegin((vec3_t){500, 400, 0});
+}
+
+static void CL_TestTouchCameraMove(vec2_t first, vec2_t second) {
+    CL_TestTouchFinger(SDL_FINGERMOTION, 1, first);
+    CL_TestTouchFinger(SDL_FINGERMOTION, 2, second); CL_Input();
+}
+
+/* Decode actual camera packets so an unwanted second camera operation cannot hide in the stream. */
+static void CL_TestTouchCameraPackets(uint32_t views, uint32_t focuses) {
+    uint32_t got_view = 0, got_focus = 0;
+    while (cls.netchan.message.readcount < cls.netchan.message.cursize) {
+        inputCmd_t cmd;
+        T_EQ(MSG_ReadByte(&cls.netchan.message), clc_input);
+        T_ASSERT(MSG_ReadInput(&cls.netchan.message, &cmd));
+        if (cmd.action == BZ_INPUT_VIEW) got_view++;
+        else if (cmd.action == BZ_INPUT_FOCUS) got_focus++;
+        else T_ASSERT(false);
+    }
+    T_EQ(got_view, views); T_EQ(got_focus, focuses);
+    SZ_Clear(&cls.netchan.message); cls.netchan.message.readcount = 0;
+}
+
+static void CL_TestTouchPanJitter(void) {
+    CL_TestTouchCameraStart();
+    CL_TestTouchCameraMove((vec2_t){0.43f, 0.51f}, (vec2_t){0.63f, 0.515f});
+    T_FEQ(cl.viewDef.camerastate[0].distance, 2000, 0.01f);
+    CL_TestTouchCameraPackets(0, 1);
+    /* Once translation owns this pair, even a larger spacing change must not start zooming. */
+    CL_TestTouchCameraMove((vec2_t){0.5f, 0.6f}, (vec2_t){0.75f, 0.62f});
+    T_FEQ(cl.viewDef.camerastate[0].distance, 2000, 0.01f);
+    CL_TestTouchCameraPackets(0, 1);
+}
+TEST(client_touch, pan_ignores_spacing_jitter_and_stays_pan_until_release) { CL_TestTouchSequence(CL_TestTouchPanJitter); }
+
+static void CL_TestTouchZoomDrift(void) {
+    CL_TestTouchCameraStart();
+    CL_TestTouchCameraMove((vec2_t){0.375f, 0.5f}, (vec2_t){0.625f, 0.5f});
+    T_ASSERT(cl.viewDef.camerastate[0].distance < 2000);
+    CL_TestTouchCameraPackets(1, 0);
+    float distance = cl.viewDef.camerastate[0].distance;
+    CL_TestTouchCameraMove((vec2_t){0.4375f, 0.55f}, (vec2_t){0.6875f, 0.55f});
+    T_FEQ(cl.viewDef.camerastate[0].distance, distance, 0.01f);
+    T_FEQ(cl.viewDef.camerastate[0].origin.x, 500, 0.01f);
+    T_FEQ(cl.viewDef.camerastate[0].origin.y, 400, 0.01f);
+    CL_TestTouchCameraPackets(0, 0);
+}
+TEST(client_touch, pinch_ignores_midpoint_drift_instead_of_panning) { CL_TestTouchSequence(CL_TestTouchZoomDrift); }
+
+static void CL_TestTouchCameraJitter(void) {
+    CL_TestTouchCameraStart();
+    CL_TestTouchCameraMove((vec2_t){0.402f, 0.501f}, (vec2_t){0.604f, 0.502f});
+    T_FEQ(cl.viewDef.camerastate[0].distance, 2000, 0.01f);
+    T_FEQ(cl.viewDef.camerastate[0].origin.x, 500, 0.01f);
+    CL_TestTouchCameraPackets(0, 0);
+}
+TEST(client_touch, small_two_finger_jitter_does_not_move_or_zoom) { CL_TestTouchSequence(CL_TestTouchCameraJitter); }
+
+/* Separate input pumps may still share one projection; each contact contributes only its new travel. */
+static void CL_TestTouchPanProjection(void) {
+    re.TraceLocation = CL_TestRenderedGround;
+    CL_TestTouchCameraBegin((vec3_t){500, 400, 0});
+    CL_TestTouchCameraMove((vec2_t){0.43125f, 0.5f}, (vec2_t){0.63125f, 0.5f});
+    T_FEQ(cl.viewDef.camerastate[0].origin.x, 468, 0.01f);
+    CL_TestTouchCameraPackets(0, 1);
+    CL_TestTouchFinger(SDL_FINGERMOTION, 1, (vec2_t){0.433203125f, 0.5f}); CL_Input();
+    T_FEQ(cl.viewDef.camerastate[0].origin.x, 467, 0.01f);
+    CL_TestTouchCameraPackets(0, 1);
+    CL_TestTouchFinger(SDL_FINGERMOTION, 2, (vec2_t){0.633203125f, 0.5f}); CL_Input();
+    T_FEQ(cl.viewDef.camerastate[0].origin.x, 466, 0.01f);
+    CL_TestTouchCameraPackets(0, 1);
+    cl.viewDef.target = cl.viewDef.camerastate[0].origin;
+    CL_TestTouchCameraMove((vec2_t){0.441015625f, 0.5f}, (vec2_t){0.641015625f, 0.5f});
+    T_FEQ(cl.viewDef.camerastate[0].origin.x, 458, 0.01f);
+    CL_TestTouchCameraPackets(0, 1);
+    /* A changed rendered base cannot move a stationary contact or replay its old displacement. */
+    cl.viewDef.target = (vec3_t){450, 400, 40};
+    CL_TestTouchCameraMove((vec2_t){0.441015625f, 0.5f}, (vec2_t){0.641015625f, 0.5f});
+    T_FEQ(cl.viewDef.camerastate[0].origin.x, 458, 0.01f);
+    CL_TestTouchCameraPackets(0, 0);
+    CL_TestTouchCameraMove((vec2_t){0.441015625f, 0.515625f}, (vec2_t){0.641015625f, 0.515625f});
+    T_FEQ(cl.viewDef.camerastate[0].origin.x, 458, 0.01f);
+    T_FEQ(cl.viewDef.camerastate[0].origin.y, 412, 0.01f);
+    CL_TestTouchCameraPackets(0, 1);
+}
+TEST(client_touch, pan_travel_is_independent_of_render_and_event_batching) { CL_TestTouchSequence(CL_TestTouchPanProjection); }
+
+static void CL_TestTouchPanMiss(void) {
+    re.TraceLocation = CL_TestGroundGap;
+    CL_TestTouchCameraBegin((vec3_t){500, 400, 0});
+    CL_TestTouchCameraMove((vec2_t){0.415625f, 0.5f}, (vec2_t){0.615625f, 0.5f});
+    T_FEQ(cl.viewDef.camerastate[0].origin.x, 484, 0.01f);
+    CL_TestTouchCameraPackets(0, 1);
+    CL_TestTouchCameraMove((vec2_t){0.43125f, 0.5f}, (vec2_t){0.63125f, 0.5f});
+    CL_TestTouchCameraPackets(0, 0);
+    CL_TestTouchCameraMove((vec2_t){0.446875f, 0.5f}, (vec2_t){0.646875f, 0.5f});
+    CL_TestTouchCameraPackets(0, 0);
+    CL_TestTouchCameraMove((vec2_t){0.4625f, 0.5f}, (vec2_t){0.6625f, 0.5f});
+    T_FEQ(cl.viewDef.camerastate[0].origin.x, 484, 0.01f);
+    CL_TestTouchCameraPackets(0, 0);
+    CL_TestTouchCameraMove((vec2_t){0.478125f, 0.5f}, (vec2_t){0.678125f, 0.5f});
+    T_FEQ(cl.viewDef.camerastate[0].origin.x, 468, 0.01f);
+    CL_TestTouchCameraPackets(0, 1);
+}
+TEST(client_touch, missed_pan_ground_rebases_without_catchup_jump) { CL_TestTouchSequence(CL_TestTouchPanMiss); }
+
+static void CL_TestTouchPanClamp(void) {
+    re.TraceLocation = CL_TestRenderedGround;
+    CL_TestTouchCameraBegin((vec3_t){1000, 400, 0});
+    CL_TestTouchCameraMove((vec2_t){0.36875f, 0.5f}, (vec2_t){0.56875f, 0.5f});
+    T_FEQ(cl.viewDef.camerastate[0].origin.x, 1024, 0.01f);
+    CL_TestTouchCameraPackets(0, 1);
+    cl.viewDef.target = cl.viewDef.camerastate[0].origin;
+    CL_TestTouchCameraMove((vec2_t){0.3375f, 0.5f}, (vec2_t){0.5375f, 0.5f});
+    T_FEQ(cl.viewDef.camerastate[0].origin.x, 1024, 0.01f);
+    CL_TestTouchCameraPackets(0, 1);
+    cl.viewDef.target = cl.viewDef.camerastate[0].origin;
+    CL_TestTouchCameraMove((vec2_t){0.3384765625f, 0.5f}, (vec2_t){0.5384765625f, 0.5f});
+    T_FEQ(cl.viewDef.camerastate[0].origin.x, 1023, 0.01f);
+    CL_TestTouchCameraPackets(0, 1);
+}
+TEST(client_touch, clamped_pan_reverses_without_repaying_overshoot) { CL_TestTouchSequence(CL_TestTouchPanClamp); }
+
+static void CL_TestTouchGradualPinch(void) {
+    CL_TestTouchCameraStart();
+    CL_TestTouchCameraMove((vec2_t){0.397f, 0.5f}, (vec2_t){0.603f, 0.5f});
+    CL_TestTouchCameraPackets(0, 0);
+    CL_TestTouchCameraMove((vec2_t){0.394f, 0.5f}, (vec2_t){0.606f, 0.5f});
+    CL_TestTouchCameraPackets(0, 0);
+    CL_TestTouchCameraMove((vec2_t){0.39f, 0.5f}, (vec2_t){0.61f, 0.5f});
+    T_ASSERT(cl.viewDef.camerastate[0].distance < 2000);
+    CL_TestTouchCameraPackets(1, 0);
+}
+TEST(client_touch, gradual_pinch_accumulates_from_initial_contacts) { CL_TestTouchSequence(CL_TestTouchGradualPinch); }
+
+static void CL_TestTouchCameraRearm(void) {
+    CL_TestTouchCameraStart();
+    CL_TestTouchCameraMove((vec2_t){0.43f, 0.5f}, (vec2_t){0.63f, 0.5f});
+    CL_TestTouchCameraPackets(0, 1);
+    /* The last pan sample survives release in the same pump, and its pair never emits zoom. */
+    CL_TestTouchFinger(SDL_FINGERMOTION, 1, (vec2_t){0.5f, 0.5f});
+    CL_TestTouchFinger(SDL_FINGERMOTION, 2, (vec2_t){0.7f, 0.5f});
+    CL_TestTouchFinger(SDL_FINGERUP, 1, (vec2_t){0.5f, 0.5f});
+    CL_TestTouchMouse(SDL_MOUSEBUTTONUP, 512, 384);
+    CL_TestTouchFinger(SDL_FINGERUP, 2, (vec2_t){0.7f, 0.5f}); CL_Input();
+    CL_TestTouchCameraPackets(0, 1);
+    T_FEQ(cl.viewDef.camerastate[0].distance, 2000, 0.01f);
+    /* A new pair can deliberately pinch with one finger anchored after the previous pan. */
+    CL_TestTouchCameraStart();
+    CL_TestTouchCameraMove((vec2_t){0.4f, 0.5f}, (vec2_t){0.65f, 0.5f});
+    T_ASSERT(cl.viewDef.camerastate[0].distance < 2000);
+    CL_TestTouchCameraPackets(1, 0);
+}
+TEST(client_touch, released_pan_can_start_a_new_anchored_pinch) { CL_TestTouchSequence(CL_TestTouchCameraRearm); }
+
+static void CL_TestTouchPinchSequence(void) {
+    gameCameraZoomPolicy_t policy;
+    T_ASSERT(CL_GameCameraZoomPolicy(&policy, 1650, 3000));
+    re.TraceLocation = CL_TestScreenGround;
+    FOR_LOOP(i, 2) {
+        cl.viewDef.camerastate[i].origin = (vec3_t){500, 400, 0};
+        cl.viewDef.camerastate[i].distance = 2000;
+    }
+    CL_TestTouchFinger(SDL_FINGERDOWN, 1, (vec2_t){0.4f, 0.5f});
+    CL_TestTouchMouse(SDL_MOUSEBUTTONDOWN, 410, 384);
+    CL_TestTouchFinger(SDL_FINGERDOWN, 2, (vec2_t){0.6f, 0.5f}); CL_Input();
+    T_ASSERT(!cl.selection.in_progress);
+    T_EQ(cls.netchan.message.cursize, 0);
+    CL_TestTouchFinger(SDL_FINGERMOTION, 1, (vec2_t){0.3f, 0.5f});
+    CL_TestTouchFinger(SDL_FINGERMOTION, 2, (vec2_t){0.7f, 0.5f}); CL_Input();
+    uint32_t views = 0;
+    while (cls.netchan.message.readcount < cls.netchan.message.cursize) {
+        inputCmd_t cmd;
+        T_EQ(MSG_ReadByte(&cls.netchan.message), clc_input);
+        T_ASSERT(MSG_ReadInput(&cls.netchan.message, &cmd));
+        if (cmd.action == BZ_INPUT_VIEW) { views++; T_FEQ(cmd.view.distance, policy.minimum, 0.01f); }
+    }
+    T_EQ(views, 1);
+    SZ_Clear(&cls.netchan.message); cls.netchan.message.readcount = 0;
+    CL_Input(); T_EQ(cls.netchan.message.cursize, 0);
+    CL_TestTouchFinger(SDL_FINGERMOTION, 1, (vec2_t){0.475f, 0.5f});
+    CL_TestTouchFinger(SDL_FINGERMOTION, 2, (vec2_t){0.525f, 0.5f}); CL_Input();
+    T_FEQ(cl.viewDef.camerastate[0].distance, 3000, 0.01f);
+    SZ_Clear(&cls.netchan.message); cls.netchan.message.readcount = 0;
+    /* A claimed pinch keeps ignoring translation even when motion and release share one pump. */
+    CL_TestTouchFinger(SDL_FINGERMOTION, 1, (vec2_t){0.575f, 0.5f});
+    CL_TestTouchFinger(SDL_FINGERMOTION, 2, (vec2_t){0.625f, 0.5f});
+    CL_TestTouchFinger(SDL_FINGERUP, 1, (vec2_t){0.575f, 0.5f});
+    CL_TestTouchMouse(SDL_MOUSEBUTTONUP, 486, 384);
+    CL_TestTouchFinger(SDL_FINGERUP, 2, (vec2_t){0.625f, 0.5f}); CL_Input();
+    inputCmd_t focus;
+    T_EQ(CL_TestCountFocus(&cls.netchan.message, &focus), 0);
+    T_FEQ(cl.viewDef.camerastate[0].origin.x, 500, 0.01f);
+    T_ASSERT(!camera_drag.active && !touch_pan.count);
+}
+TEST(client_touch, pinch_coalesces_motion_clamps_zoom_and_never_releases_an_order) { CL_TestTouchSequence(CL_TestTouchPinchSequence); }
 
 /* Cursor feedback follows mouse intent even when keyboard/drag/modal input changes. */
 TEST(client_input, edge_scroll_cursor_lifecycle) {

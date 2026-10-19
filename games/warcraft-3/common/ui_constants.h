@@ -22,7 +22,7 @@
 #define WC3_MODAL_CLIENT (1u << 1) // modal owner bit; tracks whether the client has any open modal window
 #define WC3_LAYER_COMMAND_ERROR LAYER_GAME_2 // command-failure overlay; independent of ordinary messages/transmissions
 #define WC3_CAMERA_DEFAULT_FOV 50.0f // degrees; vertical FOV; spawn, ResetToGameCamera, CL_GameDefaultCamera
-#define WC3_CAMERA_MIN_DISTANCE 1250.0f // world units; Reforged interactive zoom lower bound unless map-forced
+#define WC3_CAMERA_MIN_DISTANCE (1250.0f / 1.2f) // world units; 20% larger maximum zoom than Reforged unless map-forced
 #define WC3_CAMERA_DEFAULT_DISTANCE 1650.0f // world units; orbit distance; spawn, ResetToGameCamera, CL_GameDefaultCamera
 #define WC3_CAMERA_MAX_DISTANCE 3000.0f // world units; Reforged interactive zoom upper bound unless map-forced
 #define WC3_CAMERA_DEFAULT_PITCH 326.0f // Euler degrees; JASS AoA 304 wraps via -90-AoA; spawn, ResetToGameCamera

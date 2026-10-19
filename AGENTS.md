@@ -112,6 +112,7 @@ This codebase is inspired by **Quake 2** (id Software). The developer is deeply 
 | WC3 enemy/neutral selection, relationship colours, command authority, fog/death deselection | [docs/games/warcraft-3/selection-and-control.md](docs/games/warcraft-3/selection-and-control.md) |
 | WC3 player/team/unit color ownership, MDX TeamColor/TeamGlow precedence, projectile/effect/UI inheritance, lobby and JASS overrides | [docs/games/warcraft-3/team-colors.md](docs/games/warcraft-3/team-colors.md) |
 | WC3 mouse-edge scroll cursors, eight authored MDX directions, retail keyboard distinction | [docs/games/warcraft-3/scroll-cursors.md](docs/games/warcraft-3/scroll-cursors.md) |
+| WC3 tablet touch gestures, context-tap dispatch, targeting priority, hold and cancellation | [docs/games/warcraft-3/tablet-controls.md](docs/games/warcraft-3/tablet-controls.md) |
 | WC3 retail cursor frame/sprite ownership, animation clocks, virtual xrefs, D3D draw chain, reusable Ghidra/Frida probes | [docs/games/warcraft-3/cursor-rendering.md](docs/games/warcraft-3/cursor-rendering.md) |
 | Client numbered control groups (`cl.groups`), WC3/SC2 binds, double-tap camera focus | [docs/games/warcraft-3/control-groups.md](docs/games/warcraft-3/control-groups.md) |
 | WC3 12/24 selection policy, authoritative trimming, compact HUD and client-side cap | [docs/games/warcraft-3/selection-limit.md](docs/games/warcraft-3/selection-limit.md) |

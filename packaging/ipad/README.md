@@ -117,7 +117,7 @@ pending click or box selection (`client/cl_input.c`, direct touchscreens
 only). A touch-driven cursor never edge-scrolls (`cl_camera_edge_scroll`
 still applies to a trackpad or mouse). The tablet profile adds context taps,
 pinch zoom and non-activating long holds; see
-tablet controls (`../../docs/games/warcraft-3/tablet-controls.md`; documentation follows in this series).
+[tablet controls](../../docs/games/warcraft-3/tablet-controls.md).
 The software-keyboard flow has not been tuned yet.
 
 ## Icons

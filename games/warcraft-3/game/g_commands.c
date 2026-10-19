@@ -1177,6 +1177,45 @@ CLIENTCOMMAND(SmartPoint) {
     }
 }
 
+/* A tablet tap targets an armed command first; ordinary taps select controlled units or issue Smart. */
+CLIENTCOMMAND(Touch) {
+    gameClient_t *client = clent->client;
+    uint32_t number;
+    if (argc != 5 || !G_ParseEntityNumber(argv[1], &number) ||
+        (number && (number >= globals.num_edicts || !globals.edicts[number].inuse)) ||
+        (strcmp(argv[2], "0") && strcmp(argv[2], "1"))) return;
+    bool ground = !strcmp(argv[2], "1");
+    FOR_LOOP(i, 2) {
+        char *end;
+        double value = strtod(argv[3 + i], &end);
+        if (!argv[3 + i][0] || *end || !isfinite(value) || value < INT_MIN || value > INT_MAX) return;
+    }
+    edict_t *target = number ? &globals.edicts[number] : NULL;
+    cstring_t select[] = { "select", argv[1] };
+    cstring_t point[] = { "point", argv[3], argv[4] };
+    if (client->cursor_signal) {
+        if (ground) G_ClientCommand(clent, 3, point);
+        else if (target) G_ClientCommand(clent, 2, select);
+    } else if (G_TargetModeActive(client)) {
+        /* Point-only commands must keep their ground hit even when a model covers it.
+         * Build-on-mine placement still needs the entity-specific Select path. */
+        if (target && (client->menu.on_entity_selected || S_SpellEntityTargetMode(clent) ||
+                       (clent->build_project && S_GoldMineIsMine(target))))
+            CMD_Select(clent, 2, select);
+        else if (ground) CMD_Point(clent, 3, point);
+    } else if (target && (!G_GetMainControllableUnit(client) ||
+                         (G_UnitCanBeSelected(client, target) && G_UnitCanControl(client, target)))) {
+        /* Environmental objects can have player zero without being selectable units; keep their Smart interaction. */
+        CMD_Select(clent, 2, select);
+    } else if (target) {
+        cstring_t smart[] = { "smart", argv[1], argv[3], argv[4] };
+        CMD_Smart(clent, ground ? 4 : 2, smart);
+    } else if (ground && G_GetMainControllableUnit(client)) {
+        cstring_t smart[] = { "smartpoint", argv[3], argv[4] };
+        CMD_SmartPoint(clent, 3, smart);
+    }
+}
+
 CLIENTCOMMAND(Button) {
     char ability_name[5] = {0};
     cstring_t classname;
@@ -3148,6 +3187,7 @@ clientCommand_t clientCommands[] = {
     { "orderqueuerelease", CMD_OrderQueueRelease },
     { "smart", CMD_Smart },
     { "smartpoint", CMD_SmartPoint },
+    { "touch", CMD_Touch },
     { "cancel", CMD_Cancel },
     { "canceltrain", CMD_CancelTrain },
     { "quests", CMD_Quests },
