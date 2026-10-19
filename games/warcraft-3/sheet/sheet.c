@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <stdint.h>
+#include <stdatomic.h>
 
 #include "common/common.h"
 #include "common/stb_slk.h"
@@ -39,6 +40,7 @@ static sheetCell_t cells[1024 * 1024] = { 0 };
 static sheetRow_t rows[1024 * 1024] = { 0 };
 static sheetField_t fields[1024 * 1024] = { 0 };
 static char text_buffer[8 * 1024 * 1024] = { 0 };
+static atomic_flag sheet_lock = ATOMIC_FLAG_INIT;
 static string_t current_text = text_buffer;
 static sheet_t *current_cell = cells;
 static sheet_t *previous_cell = cells;
@@ -235,15 +237,6 @@ static sheetTable_t *FS_ParseSLK_Buffer(cstring_t buffer)
     return NULL;
 }
 
-
-static sheetTable_t *FS_ParseSLK(cstring_t fileName) {
-    string_t buffer = FS_ReadFileIntoString(fileName);
-    sheetTable_t *sheet;
-    if (!buffer) return NULL;
-    sheet = FS_ParseSLK_Buffer(buffer);
-    FS_FreeFileString(buffer);
-    return sheet;
-}
 
 static cstring_t FS_FindSheetCell(sheetTable_t const *sheet, cstring_t row, cstring_t column) {
     for (; sheet; sheet = sheet->next) {
@@ -494,23 +487,24 @@ static void *FS_LoadSheetTyped(sheetTable_t const *sheet, slkField_t const *sche
     current_field = _saved_fld;   \
     current_text  = _saved_text
 
+/* File I/O precedes the scratch lock so concurrent archive reads never invert lock order. */
 uint32_t Stb_SlkLoad(cstring_t filename, slkField_t const *schema, void **dest, uint32_t row_stride) {
-    SHEET_POOL_SAVE();
-    uint32_t count = 0;
-    sheetTable_t *sheet = FS_ParseSLK(filename);
-    if (sheet && dest && schema && row_stride)
-        *dest = FS_LoadSheetTyped(sheet, schema, row_stride, &count);
-    SHEET_POOL_RESTORE();
+    string_t buffer = FS_ReadFileIntoString(filename);
+    uint32_t count = Stb_SlkLoadBuffer(buffer, schema, dest, row_stride);
+    FS_FreeFileString(buffer);
     return count;
 }
 
+/* Serialize only the temporary SLK pools, never an entire simulation or render frame. */
 uint32_t Stb_SlkLoadBuffer(cstring_t buffer, slkField_t const *schema, void **dest, uint32_t row_stride) {
+    while (atomic_flag_test_and_set_explicit(&sheet_lock, memory_order_acquire)) {}
     SHEET_POOL_SAVE();
     uint32_t count = 0;
     sheetTable_t *sheet = FS_ParseSLK_Buffer(buffer);
     if (sheet && dest && schema && row_stride)
         *dest = FS_LoadSheetTyped(sheet, schema, row_stride, &count);
     SHEET_POOL_RESTORE();
+    atomic_flag_clear_explicit(&sheet_lock, memory_order_release);
     return count;
 }
 

@@ -22,6 +22,12 @@ The initial menu command comes from `ui_start_command`, defaulting to `menu_main
 
 ## Main Loop
 
+For native listen-server rendering, `CL_UpdateFrame` performs the client update
+before a server tick is posted; `SCR_UpdateScreen` then overlaps the tick.
+`SV_EndFrame` joins before another client update. `CL_Frame` retains the complete
+synchronous wrapper for tools and acceptance callers. See
+[server and renderer threads](server-render-threads.md) for ownership and latency.
+
 `CL_Frame(DWORD msec)` is called once per rendered frame by the platform layer (`common/main.c`). It performs the following steps in order:
 
 ```c

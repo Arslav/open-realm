@@ -602,7 +602,7 @@ static cstring_t instance_effects_disabled(cstring_t name, cstring_t fallback) {
 /* Compare observable particle state and RNG with the same real actor calls, including packet overflow. */
 TEST(mdx_geoset, effect_packets_preserve_particles_rng_and_singleton_capacity_flush) {
     geosetFixture_t f;
-    vec3_t position[257], velocity[257]; int next_random = 0;
+    vec3_t position[257], velocity[257]; float next_random = 0;
     FOR_LOOP(enabled, 2) {
         setup_geoset(&f, BLEND_MODE_NONE); tr.render_phase = RENDER_PHASE_SOLID;
         ri.CvarString = enabled ? instance_defaults : instance_effects_disabled;
@@ -610,7 +610,8 @@ TEST(mdx_geoset, effect_packets_preserve_particles_rng_and_singleton_capacity_fl
         mdxParticleEmitter_t emitter = {.EmissionRate = 10, .LifeSpan = 1, .Speed = 17,
             .Variation = 7, .Latitude = 35, .Length = 3, .Width = 5, .Rows = 1, .Columns = 1};
         f.model.emitters = &emitter;
-        R_TestResetParticles(); poses = draws = emits = 0; srand(421);
+        R_TestResetParticles(); poses = draws = emits = 0; R_SeedRandom(421);
+        srand(613); int const game_random = rand(); srand(613);
         MDLX_ClearPoseCache(); MDLX_BeginModelBatch();
         FOR_LOOP(i, 257) {
             f.matrix.v[12] = i * 13.7f; f.ent.frame = f.ent.oldframe = i;
@@ -625,9 +626,10 @@ TEST(mdx_geoset, effect_packets_preserve_particles_rng_and_singleton_capacity_fl
         }
         MDLX_EndModelBatch();
         T_EQ(R_TestParticleCount(), 257); T_EQ(emits, 257); T_FEQ(emitter.accumulator, 0, 0.0001f);
+        T_EQ(rand(), game_random);
         T_EQ(draws, enabled ? 2 : 257); T_EQ(inst.draws, enabled ? 1 : 0);
-        if (enabled) { T_EQ(inst.counts[0], 256); T_EQ(inst.total, 256); T_EQ(rand(), next_random); }
-        else next_random = rand();
+        if (enabled) { T_EQ(inst.counts[0], 256); T_EQ(inst.total, 256); T_FEQ(R_Random(), next_random, 0); }
+        else next_random = R_Random();
         /* Alpha geometry does not advance particle state a second time. */
         tr.render_phase = RENDER_PHASE_ALPHA; f.layers[0].blendMode = BLEND_MODE_BLEND;
         MDLX_BeginModelBatch(); MDX_RenderModel(&f.ent, &f.model, &f.matrix); MDLX_EndModelBatch();
@@ -1450,7 +1452,7 @@ TEST(mdx_geoset, packet_cache_keeps_partial_small_excess_and_invalidated_draws_o
 
 TEST(mdx_geoset, packet_workers_preserve_owner_particle_positions_velocities_and_rng) {
     extern void MDLX_TestResetPoseCache(void);
-    vec3_t position[32], velocity[32]; int random = 0;
+    vec3_t position[32], velocity[32]; float random = 0;
     cstring_t modes[] = {"0", "1", "2"};
     FOR_LOOP(mode, 3) {
         geosetFixture_t f; setup_geoset(&f, BLEND_MODE_NONE);
@@ -1459,7 +1461,7 @@ TEST(mdx_geoset, packet_workers_preserve_owner_particle_positions_velocities_and
         mdxParticleEmitter_t emitter = {.EmissionRate = 10, .LifeSpan = 1, .Speed = 17,
             .Variation = 7, .Latitude = 35, .Length = 3, .Width = 5, .Rows = 1, .Columns = 1};
         f.model.emitters = &emitter;
-        R_TestResetParticles(); poses = draws = emits = 0; srand(421);
+        R_TestResetParticles(); poses = draws = emits = 0; R_SeedRandom(421);
         MDLX_TestResetPoseCache(); MDLX_BeginModelBatch(); T_ASSERT(MDLX_BeginPosePreparation(2));
         FOR_LOOP(i, 32) {
             f.ent.frame = f.ent.oldframe = i; f.matrix.v[12] = i * 13.7f;
@@ -1478,7 +1480,7 @@ TEST(mdx_geoset, packet_workers_preserve_owner_particle_positions_velocities_and
             }
         }
         MDLX_EndModelBatch(); T_EQ(emits, 32); T_EQ(inst.total, 32); T_EQ(inst.draws, 1);
-        if (!mode) random = rand(); else T_EQ(rand(), random);
+        if (!mode) random = R_Random(); else T_FEQ(R_Random(), random, 0);
         MDLX_ShutdownPoseWorkers(); MDLX_ShutdownModelBatches(); MDLX_TestResetPoseCache(); mdlx.shader = NULL;
     }
     R_TestResetParticles();

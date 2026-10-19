@@ -1004,13 +1004,13 @@ static void M2_EmitterMatrix(m2_pctx_t const *ctx, mat4_t *out) {
 static void m2_spawn_particle(void *raw) {
 	m2_pctx_t *ctx = (m2_pctx_t *)raw;
 	cparticle_t *fx = R_SpawnParticle(); if (!fx) return;
-	float r = (float)rand() / (float)RAND_MAX;
+	float r = R_Random();
 	mat4_t emitter_matrix;
 	M2_EmitterMatrix(ctx, &emitter_matrix);
 	vec3_t local_origin = ctx->p->position;
 	local_origin.z += ctx->zsource;
 	vec3_t org = Matrix4_multiply_vector3(&emitter_matrix, &local_origin);
-	vec3_t dir = m2_particle_direction(ctx->lat, ctx->lon, (vec2_t){ 2.0f * (float)rand() / (float)RAND_MAX - 1.0f, 2.0f * (float)rand() / (float)RAND_MAX - 1.0f });
+	vec3_t dir = m2_particle_direction(ctx->lat, ctx->lon, (vec2_t){ 2.0f * R_Random() - 1.0f, 2.0f * R_Random() - 1.0f });
 	vec3_t w_dir = Matrix4_multiply_vector3(&emitter_matrix, &dir);
 	vec3_t w_zero = Matrix4_multiply_vector3(&emitter_matrix, &(vec3_t){ 0, 0, 0 });
 	dir = Vector3_sub(&w_dir, &w_zero);

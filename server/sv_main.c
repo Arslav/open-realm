@@ -20,6 +20,8 @@ struct server_static svs;
 static PATHSTR sv_external_map;
 static bool sv_external_map_pending;
 static bool sv_external_quit_pending;
+typedef enum { SV_FRAME_IDLE, SV_FRAME_QUEUED, SV_FRAME_RUNNING } svFrameStage_t;
+static svFrameStage_t sv_frame_stage;
 
 #define BZ_KEEPALIVE_MSEC 1000 // milliseconds; Quake 2's interval; keeps clients alive while waiting to spawn
 
@@ -327,7 +329,8 @@ void SV_SetPaused(bool paused) {
 /* Main server tick called from the platform event loop with the elapsed
  * milliseconds since the last call.  Network input remains live while the
  * authoritative simulation is paused. */
-void SV_Frame(uint32_t msec) {
+static void SV_FrameInternal(uint32_t msec, bool deferred) {
+    assert(sv_frame_stage == SV_FRAME_IDLE);
     uint32_t external_steps = 0, completed_steps = 0;
     bool external_clock;
     if (Cvar_Integer("online_mode", 0) && SV_IsActive() && !Online_Ready()) {
@@ -410,7 +413,42 @@ void SV_Frame(uint32_t msec) {
     }
 
     sv.next_frame_msec = SV_ClampSimulationDeadline(svs.realtime, sv.next_frame_msec);
-    SV_RunGameFrame();
+    if (deferred) {
+        sv_frame_stage = SV_FRAME_QUEUED;
+        /* A long resource-registration stall must hear complete traffic before CL_CheckTimeout runs. */
+        if (msec >= BZ_KEEPALIVE_MSEC) SV_SendClientMessages();
+    } else {
+        SV_RunGameFrame();
+        sv.next_frame_msec += FRAMETIME;
+        SV_SendClientMessages();
+    }
+}
+
+/* Dedicated servers and externally stepped batches retain their synchronous scheduler contract. */
+void SV_Frame(uint32_t msec) { SV_FrameInternal(msec, false); }
+void SV_PrepareFrame(uint32_t msec) { SV_FrameInternal(msec, true); }
+
+/* Client update may replace/pause the map; start only the reservation that survived that phase. */
+void SV_StartPreparedFrame(bool threaded) {
+    if (sv_frame_stage != SV_FRAME_QUEUED) return;
+    sv_frame_stage = SV_FRAME_IDLE;
+    if (sv.state != ss_game || sv.paused) return;
+    if (threaded) {
+        sv_frame_stage = SV_FRAME_RUNNING;
+        SV_StartGameFrame();
+    } else {
+        SV_RunGameFrame();
+        sv.next_frame_msec += FRAMETIME;
+        SV_SendClientMessages();
+    }
+}
+
+/* Publish only completed game state, once for every recipient through the ordinary transport. */
+void SV_EndFrame(void) {
+    if (sv_frame_stage == SV_FRAME_IDLE) return;
+    if (sv_frame_stage == SV_FRAME_QUEUED) { sv_frame_stage = SV_FRAME_IDLE; return; }
+    SV_JoinGameFrame();
+    sv_frame_stage = SV_FRAME_IDLE;
     sv.next_frame_msec += FRAMETIME;
     SV_SendClientMessages();
 }

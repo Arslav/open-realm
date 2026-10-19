@@ -15,6 +15,7 @@
 #include <linux/fs.h>
 #endif
 #include <time.h>
+#include <stdatomic.h>
 #include <ctype.h>
 #ifdef _WIN32
 #include <windows.h>
@@ -891,8 +892,14 @@ static void ExtractStarCraft2(void) {
 }
 #endif
 
-static bool filelock = false;
+static atomic_flag filelock = ATOMIC_FLAG_INIT;
 void PF_Sleep(uint32_t msec);
+
+/* Archive handles share seek/cache state; keep an open/read/close transaction indivisible. */
+static void FS_LockFiles(void) {
+    while (atomic_flag_test_and_set_explicit(&filelock, memory_order_acquire)) PF_Sleep(1);
+}
+static void FS_UnlockFiles(void) { atomic_flag_clear_explicit(&filelock, memory_order_release); }
 
 typedef struct fsFind_s {
     uint32_t archiveIndex;
@@ -981,12 +988,9 @@ static void FS_FindCollectLooseDir(fsFind_t *find, cstring_t root, cstring_t rel
 static handle_t FS_OpenNestedLooseFile(cstring_t filename);
 
 handle_t FS_OpenFile(cstring_t fileName) {
-    while (filelock) {
-        PF_Sleep(10);
-    }
-    filelock = true;
+    FS_LockFiles();
     if (!fileName || !*fileName) {
-        filelock = false;
+        FS_UnlockFiles();
         return NULL;
     }
     if (priority_archive) {
@@ -1009,7 +1013,7 @@ handle_t FS_OpenFile(cstring_t fileName) {
     if (looseNestedFile) {
         return looseNestedFile;
     }
-    filelock = false;
+    FS_UnlockFiles();
     return NULL;
 }
 
@@ -1136,7 +1140,7 @@ static handle_t FS_OpenNestedLooseFile(cstring_t filename) {
 
 void FS_CloseFile(handle_t file) {
     SFileCloseFile(file);
-    filelock = false;
+    FS_UnlockFiles();
 }
 
 // Quake 3-style FS_ReadFile: returns size, allocates buffer via buf pointer
@@ -1249,26 +1253,30 @@ void FS_ReadFileAll(cstring_t filename, void (*callback)(handle_t buf, uint32_t 
         handle_t file;
         if (!archives[i]) continue;
         if (!FS_ArchiveFileVisible(archiveNames[i], filename)) continue;
-        if (!SFileOpenFileEx(archives[i], filename, SFILE_OPEN_FROM_MPQ, &file)) continue;
+        FS_LockFiles();
+        if (!SFileOpenFileEx(archives[i], filename, SFILE_OPEN_FROM_MPQ, &file)) { FS_UnlockFiles(); continue; }
         uint32_t sz = SFileGetFileSize(file, NULL);
         string_t buf = MemAlloc(sz + 1);
         SFileReadFile(file, buf, sz, NULL, NULL);
         buf[sz] = '\0';
         SFileCloseFile(file);
+        FS_UnlockFiles();
         callback(buf, sz, ud);
         MemFree(buf);
     }
     if (priority_archive) {
         handle_t file;
+        FS_LockFiles();
         if (SFileOpenFileEx(priority_archive, filename, SFILE_OPEN_FROM_MPQ, &file)) {
             uint32_t sz = SFileGetFileSize(file, NULL);
             string_t buf = MemAlloc(sz + 1);
             SFileReadFile(file, buf, sz, NULL, NULL);
             buf[sz] = '\0';
             SFileCloseFile(file);
+            FS_UnlockFiles();
             callback(buf, sz, ud);
             MemFree(buf);
-        }
+        } else FS_UnlockFiles();
     }
 }
 
@@ -1309,18 +1317,15 @@ static bool FS_FindAdvance(fsFind_t *find, sfileFindData_t *findData) {
 handle_t FS_FindFirstFile(cstring_t mask, sfileFindData_t *findData) {
     fsFind_t *find;
 
-    while (filelock) {
-        PF_Sleep(10);
-    }
-    filelock = true;
+    FS_LockFiles();
     if (!mask || !*mask || !findData) {
-        filelock = false;
+        FS_UnlockFiles();
         return NULL;
     }
 
     find = calloc(1, sizeof(*find));
     if (!find) {
-        filelock = false;
+        FS_UnlockFiles();
         return NULL;
     }
     snprintf(find->mask, sizeof(find->mask), "%s", mask);
@@ -1345,7 +1350,7 @@ handle_t FS_FindFirstFile(cstring_t mask, sfileFindData_t *findData) {
         return find;
     }
     free(find);
-    filelock = false;
+    FS_UnlockFiles();
     return NULL;
 }
 
@@ -1363,7 +1368,7 @@ bool FS_FindClose(handle_t handle) {
         free(find->looseFiles);
         free(find);
     }
-    filelock = false;
+    FS_UnlockFiles();
     return true;
 }
 
@@ -1583,13 +1588,13 @@ void MemFree(handle_t mem) {
 }
 
 void Com_Quit(void) {
+    SV_Shutdown(); /* Drain game work before the renderer destroys SDL and client resources. */
     if (!Cvar_Integer("dedicated", 0)) {
         /* Frame-limited runs are diagnostics; writing them would persist command-line cvars into the user config. */
         if (Cvar_Integer("com_frame_limit", 0) <= 0)
             Cvar_WriteConfig(Cvar_String("config", ""));
         CL_Shutdown();
     }
-    SV_Shutdown();
     NET_Shutdown();
     FS_Shutdown();
     Sys_Quit();

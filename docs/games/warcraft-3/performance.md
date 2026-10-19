@@ -7,6 +7,98 @@ toggle. Historical references below describe what was retained at capture time;
 old binary packages may have been cleaned while source/patch evidence is indexed
 in the optimization archive (`$OPENREALM_EXPERIMENTS_DIR/warcraft-3/optimization-archive/README.md`, external archive).
 
+
+## Native server/render overlap (October 18–19, 2026)
+
+The `perf/server-render-threads` branch, based on `9c37777c`, overlaps the
+ordered authoritative game tick with the client draw. Network maintenance
+still precedes the client update; a reserved tick starts afterward and is joined
+before snapshots are published. GL/EGL and host services retain their owner.
+The simulation step remains 100 ms; there is no camera-dependent simulation
+or change to network/save layouts. See [thread ownership and tests](../../architecture/server-render-threads.md).
+There is no runtime toggle; the preceding implementation remains in the base
+revision and the complete branch/patch is retained in the
+thread trial archive (`$OPENREALM_EXPERIMENTS_DIR/warcraft-3/optimization-archive/server-thread-20261018/README.md`, external archive).
+
+Honor AGM3-AL09HN / Android 12 / Mali-G52 MC2, SDK35 ANGLE/Vulkan,
+`Maps/FrozenThrone/Campaign/OrcX01.w3x`, 1920×1200 drawable and **100% render**.
+The accepted scan/pose/palette settings and full effects remain enabled. Each
+fresh process/map contributes a 25-second authored opening window and another
+25-second window ten seconds after the normal cinematic skip. Counters are on;
+no sampler, GPU queries, traces or builds overlap these FPS windows.
+
+| Run | Variant | Opening FPS | Starting gameplay FPS |
+|---|---|---:|---:|
+| A1 | Preceding accepted APK | 12.039 | 12.236 |
+| B1 | Thread branch | 18.856 | 18.350 |
+| B2 | Thread branch | 19.574 | 19.911 |
+| A2 | Preceding accepted APK | 12.815 | 13.079 |
+| Weighted A | Frames / elapsed | **12.432** | **12.659** |
+| Weighted B | Frames / elapsed | **19.210** | **19.132** |
+| Change | B / A | **+54.52%** | **+51.13%** |
+
+This is a two-APK package comparison, including private presentation RNG and
+shared-service synchronization, rather than an isolated threading toggle. Fresh
+camera/timer/RNG/DVFS variation remains; this does not establish later-mission,
+sustained-thermal or minimum-frame performance. The 40 FPS target remains unmet.
+One early screenshot shows 27 FPS, but that is not the full-window average.
+
+Baseline APK: `ec60c8fd4cea8faae239e8b966e29136facb41c303d63d295de6a5301a5b041f`.
+Measured candidate: `c0babcc0291dd21f5e07879be0bb169861c7a12ea53b3479c9e87ba718b4fa7b`.
+Only `libwarcraft3.so`, `librealm_renderer.so` and `librealm_sheet.so` are
+replaced. Java/assets, the accepted game module, remaining libraries and signing
+certificate match the original. Original settings/progress and all five save
+hashes are verified after restoration; the measured candidate stays installed.
+
+### Lifecycle correction and checks
+
+Prototype 1 (`9ca7b88eb4bb53f980fb974a0b1d345cb79cb6eef38db4cdd1cf91575378ecdb`)
+put the client update ahead of server network maintenance. After long asset
+registration, the client timed out before receiving fresh traffic and never
+reached `G_ClientBegin`; there were no valid FPS windows. Its source and failed
+capture remain archived. The regression reproduces the incorrect phase order
+with four failed assertions. The corrected preparation/start/barrier phases and
+long-gap keepalive now pass, including cancellation on pause, map replacement
+and shutdown. Final native startup reaches the real mission and confirms a
+separate `server-sim` thread alongside `SDLThread` and the MDX workers.
+
+The full suite passes **7,244 executions / 36 JUnit reports**, zero failures,
+errors or skips, plus five ANGLE Python cases. Optimized scheduler/frame/resource
+checks and native Android compilation pass; the shared path also passes WC3,
+WoW and SC2 coverage. The boundary audit and diff check are clean. ThreadSanitizer
+fails before `main` even for an empty program; combined ASan/UBSan also cannot
+start the empty control. These runs are not sanitizer passes.
+
+### Profile after the split
+
+Separate 20-second, 500-Hz `task-clock:u` captures contain **9,042 / 10,946
+samples, zero loss**, and no missing required shared-library build IDs. These
+profiled FPS values are excluded from the comparison above.
+
+| Lane | Opening CPU seconds / app CPU share | Gameplay CPU seconds / app CPU share |
+|---|---:|---:|
+| Main SDL thread | 11.10 / 61.4% | 12.19 / 55.7% |
+| Server simulation | 5.61 / 31.0% | 8.24 / 37.6% |
+| MDX workers combined | 0.14 / 0.8% | 0.14 / 0.6% |
+
+These are weighted active userspace CPU shares, not wall-frame or GPU fractions.
+`SCR_UpdateScreen` accounts for 70.83% / 80.20% of the **main lane's** CPU.
+Gameplay worker CPU still includes status updates 13.61%, spatial queries
+13.90% and selection validation 9.49%; inclusive percentages overlap.
+The barrier averages 12–13 ms per tick in the opening and 16–20 ms in gameplay
+across the two FPS runs. Host wait is included in job wall time, not added to it.
+`COM_FRAME.server_ms` now covers owner preparation/barrier/snapshot work; it is
+not directly comparable with the old full serial simulation column.
+
+A concrete next main-thread target is the per-entity `cl_debug_entities` lookup:
+13.66% of gameplay main-lane CPU is `strcmp` at the resolved inline chain
+`Cvar_FindVar -> Cvar_Integer -> V_AddClientEntity` (`client/cl_view.c:346`).
+This is stronger evidence than attributing every `strcmp` sample to renderer
+settings in general. Other prospective work is status/spatial/selection scans
+on the worker and immutable message queues to reduce host waits. These are
+profile findings, not additional implemented optimizations in this trial.
+
+
 ## Android credits profiling (October 2026)
 
 The repeatable startup scene is documented in [Android credits test APK](../../android.md#frozen-throne-credits-test-apk).

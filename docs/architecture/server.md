@@ -12,6 +12,11 @@ The server (`server/`) is the authoritative simulation layer. It owns the canoni
 
 ## Main Loop
 
+Native listen servers now use a bounded worker/render pipeline. See
+[server and renderer threads](server-render-threads.md) for phase ownership,
+host-service handoffs, lifecycle barriers and profiling semantics. The
+`SV_Frame` description below remains the synchronous dedicated/tool contract.
+
 `SV_Frame(DWORD msec)` is called from the platform main loop alongside `CL_Frame`. Unlike the client, the server advances only when its monotonic real-time clock reaches the next fixed `FRAMETIME` (100 ms) simulation deadline:
 
 ```c

@@ -27,10 +27,10 @@ static color32_t MDLX_GetEmitterColor(mdxParticleEmitter_t const *emitter, uint3
 static void mdx_spawn_particle(void *raw) {
     mdx_pctx_t *ctx = (mdx_pctx_t *)raw;
     cparticle_t *p = R_SpawnParticle(); if (!p) return;
-    float r = (float)rand() / (float)RAND_MAX;
+    float r = R_Random();
     vec3_t origin = {
         (r - 0.5f) * ctx->length,
-        ((float)rand() / (float)RAND_MAX - 0.5f) * ctx->width,
+        (R_Random() - 0.5f) * ctx->width,
         0.0f,
     };
     vec3_t pivot = { 0, 0, 0 };

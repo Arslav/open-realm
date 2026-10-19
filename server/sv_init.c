@@ -1,4 +1,5 @@
 #include "server.h"
+#include "common/server_api.h"
 #include "common/online.h"
 #include <zlib.h>
 
@@ -51,6 +52,7 @@ bool SV_GetSaveMap(cstring_t name, string_t map, uint32_t map_size) {
 static void SV_SaveGame_f(void) {
     PATHSTR path;
 
+    SV_EndFrame();
     if (Cmd_Argc() != 2) { fprintf(stderr, "usage: save <name>\n"); return; }
     if (sv.state != ss_game || !SV_SavePath(Cmd_Argv(1), path)) return;
     if (!ge || !ge->SaveGame ||
@@ -429,6 +431,7 @@ void SV_Map(cstring_t mapFilename) {
     uint32_t num_lobby_clients;
     bool had_lobby;
 
+    SV_EndFrame();
     fprintf(stderr, "Server initialization (loopback/local map).\n");
     had_lobby = sv.state == ss_lobby && svs.lobby.active;
     num_lobby_clients = SV_SaveLobbyClients(lobby_clients, MAX_CLIENTS);
@@ -557,6 +560,7 @@ void SV_InitGame(void) {
 }
 
 void SV_Shutdown(void) {
+    SV_EndFrame(); SV_StopThread();
     Cbuf_ClearDefer();
     if (!svs.initialized) {
         return;

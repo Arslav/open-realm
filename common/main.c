@@ -375,8 +375,7 @@ static string_t Sys_ConsoleInput(void) {
 }
 #endif /* !__EMSCRIPTEN__ */
 
-/* The browser supplies frame scheduling; never busy-wait on its event thread.
- * Keep the real client/server frame order identical to the native loop. */
+/* The browser supplies frame scheduling; never busy-wait on its event thread. */
 typedef struct {
     uint32_t previous_time;
     uint32_t frame_count;
@@ -422,12 +421,32 @@ static void OpenRealm_Frame(void *argument) {
     Uint64 start = profile ? SDL_GetPerformanceCounter() : 0;
     Online_Frame(elapsed);
     Uint64 online_end = profile ? SDL_GetPerformanceCounter() : 0;
-    if (SV_NeedsFrame())
-        SV_Frame(Cvar_Integer("com_fast_forward", 0) ? FRAMETIME : elapsed);
-    Uint64 server_end = profile ? SDL_GetPerformanceCounter() : 0;
+    Uint64 server_ticks = 0, server_start = profile ? SDL_GetPerformanceCounter() : 0;
     if (!state->dedicated) {
+#ifndef __EMSCRIPTEN__
+        /* Preserve transport-before-client ordering across long loading/registration stalls. */
+        if (SV_NeedsFrame()) {
+            uint32_t const step = Cvar_Integer("com_fast_forward", 0) ? FRAMETIME : elapsed;
+            if (cls.state == ca_active && !CL_MovieActive()) SV_PrepareFrame(step);
+            else SV_Frame(step);
+        }
+        if (profile) server_ticks += SDL_GetPerformanceCounter() - server_start;
+        CL_UpdateFrame(elapsed);
+        server_start = profile ? SDL_GetPerformanceCounter() : 0;
+        SV_StartPreparedFrame(cls.state == ca_active && !CL_MovieActive());
+        if (profile) server_ticks += SDL_GetPerformanceCounter() - server_start;
+        SCR_UpdateScreen(elapsed);
+        server_start = profile ? SDL_GetPerformanceCounter() : 0;
+        SV_EndFrame();
+        if (profile) server_ticks += SDL_GetPerformanceCounter() - server_start;
+#else
+        if (SV_NeedsFrame()) SV_Frame(Cvar_Integer("com_fast_forward", 0) ? FRAMETIME : elapsed);
+        if (profile) server_ticks += SDL_GetPerformanceCounter() - server_start;
         CL_Frame(elapsed);
+#endif
     } else {
+        if (SV_NeedsFrame()) SV_Frame(Cvar_Integer("com_fast_forward", 0) ? FRAMETIME : elapsed);
+        if (profile) server_ticks += SDL_GetPerformanceCounter() - server_start;
 #ifndef __EMSCRIPTEN__
         string_t cmd = Sys_ConsoleInput();
         if (cmd && *cmd) {
@@ -437,7 +456,8 @@ static void OpenRealm_Frame(void *argument) {
         }
 #endif
     }
-    Com_ProfileFrame(profile, start, online_end, server_end, profile ? SDL_GetPerformanceCounter() : 0);
+    /* The server column is owner preparation/barrier time; simulation overlaps drawing and is not added twice. */
+    Com_ProfileFrame(profile, start, online_end, online_end + server_ticks, profile ? SDL_GetPerformanceCounter() : 0);
     state->previous_time = current_time;
     state->frame_count++;
     if (Cvar_Integer("com_frame_limit", 0) > 0 &&

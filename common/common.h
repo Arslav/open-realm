@@ -262,6 +262,7 @@ void FS_SetSheetHost(sheetHost_t const *host);
 
 void CL_Init(void);
 void CL_Frame(uint32_t msec);
+void CL_UpdateFrame(uint32_t msec);
 void CL_Shutdown(void);
 
 /* Sound (sound/s_sound.c) */

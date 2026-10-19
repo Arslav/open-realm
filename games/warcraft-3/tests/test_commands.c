@@ -14,6 +14,8 @@
 #include "common.h"
 #include "test.h"
 #include "common/video_modes.h"
+#include "common/stb_slk.h"
+#include <SDL2/SDL.h>
 
 static PATHSTR last_loading_map;
 static PATHSTR last_sv_map;
@@ -23,6 +25,47 @@ static PATHSTR last_connect_host;
 static char last_forwarded[1024];
 static uint32_t forwarded_count;
 static bool command_tests_initialized;
+
+typedef struct { uint32_t value; } concurrentRow_t;
+typedef struct {
+    cstring_t name;
+    void *bytes;
+    uint32_t size, index, errors, copies;
+    SDL_sem *gate;
+} concurrentRead_t;
+static slkField_t const concurrent_schema[] = {
+    { "value", offsetof(concurrentRow_t, value), BZ_FIELD_U32 },
+    { 0 }
+};
+
+/* Layer callbacks may reopen a file; archive locking must end before calling them. */
+static void concurrent_layer(void *data, uint32_t size, void *context) {
+    (void)data; (void)size;
+    concurrentRead_t *read = context;
+    uint32_t count = 0;
+    void *bytes = FS_ReadFile(read->name, &count);
+    if (!bytes || count != read->size || memcmp(bytes, read->bytes, count)) read->errors++;
+    FS_FreeFile(bytes); read->copies++;
+}
+
+/* Never assert from a worker: the shared test reporter belongs to the owner. */
+static int concurrent_resource_reads(void *context) {
+    concurrentRead_t *read = context;
+    SDL_SemWait(read->gate);
+    FOR_LOOP(i, 200) {
+        uint32_t size = 0, value = read->index * 71 + i;
+        void *bytes = FS_ReadFile(read->name, &size);
+        if (!bytes || size != read->size || memcmp(bytes, read->bytes, size)) read->errors++;
+        FS_FreeFile(bytes);
+        if (!(i % 16)) FS_ReadFileAll(read->name, concurrent_layer, read);
+        char slk[256]; concurrentRow_t *rows = NULL;
+        snprintf(slk, sizeof(slk), "ID;PWXL;N;E\nC;X1;Y1;K\"id\"\nC;X2;K\"value\"\nC;X1;Y2;K\"test\"\nC;X2;K%u\nE\n", value);
+        uint32_t count = Stb_SlkLoadBuffer(slk, concurrent_schema, (void **)&rows, sizeof(*rows));
+        if (count != 1 || !rows || rows[0].value != value) read->errors++;
+        FS_SLKFreeRows(concurrent_schema, rows, count, sizeof(*rows));
+    }
+    return 0;
+}
 static bool late_command_called;
 static bool save_map_readable;
 static bool load_game_ok;
@@ -123,6 +166,27 @@ static void setup_command_tests(void) {
     T_ASSERT(FS_AddArchive("build/tests/tests.mpq") != NULL);
     reset_map_handoff();
     command_tests_initialized = true;
+}
+
+TEST(commands, concurrent_archive_reads_layer_callbacks_and_slk_decodes_keep_private_results) {
+    setup_command_tests();
+    concurrentRead_t reads[] = { { .name = "Units\\UnitData.slk" }, { .name = "Scripts\\common.j" } };
+    SDL_Thread *threads[2]; SDL_sem *gate = SDL_CreateSemaphore(0);
+    T_NOT_NULL(gate);
+    FOR_LOOP(i, 2) {
+        reads[i].index = i; reads[i].gate = gate;
+        reads[i].bytes = FS_ReadFile(reads[i].name, &reads[i].size);
+        T_NOT_NULL(reads[i].bytes); T_ASSERT(reads[i].size > 0);
+        threads[i] = SDL_CreateThread(concurrent_resource_reads, "resource-test", &reads[i]);
+        T_NOT_NULL(threads[i]);
+    }
+    SDL_SemPost(gate); SDL_SemPost(gate);
+    FOR_LOOP(i, 2) {
+        SDL_WaitThread(threads[i], NULL);
+        T_EQ(reads[i].errors, 0); T_ASSERT(reads[i].copies > 0);
+        FS_FreeFile(reads[i].bytes);
+    }
+    SDL_DestroySemaphore(gate);
 }
 
 TEST(commands, deferred_tail_preserves_unknown_commands_arguments_and_order) {

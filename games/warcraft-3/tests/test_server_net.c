@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <fcntl.h>
+#include <SDL2/SDL.h>
 
 #include "test.h"
 
@@ -57,6 +58,66 @@ bool FS_FindClose(handle_t find) {
 }
 
 static void test_run_frame(void) {
+}
+static uint32_t test_map_frame_calls;
+static void test_count_map_frame(void) { test_map_frame_calls++; }
+
+static SDL_sem *thread_entered, *thread_release;
+static SDL_threadID thread_owner, thread_tick, thread_host;
+static uint32_t thread_calls, thread_saw_time;
+static bool thread_released;
+static uint32_t thread_sent[2];
+static char thread_argument[64], thread_file[64];
+static vec2_t thread_position;
+static uint32_t thread_flags;
+static color32_t thread_color;
+static float thread_duration;
+
+static void thread_ping_call(edict_t *ent, vec2_t const *position, float duration, color32_t color, uint32_t flags) {
+    (void)ent;
+    thread_host = SDL_ThreadID(); thread_calls++;
+    thread_position = *position; thread_duration = duration; thread_color = color; thread_flags = flags;
+}
+
+static void thread_menu_call(cstring_t action, cstring_t arg) {
+    thread_host = SDL_ThreadID(); thread_calls++;
+    snprintf(thread_argument, sizeof(thread_argument), "%s:%s", action, arg);
+}
+static handle_t thread_read_call(cstring_t name, uint32_t *size) {
+    thread_host = SDL_ThreadID(); thread_calls++;
+    *size = (uint32_t)strlen(name);
+    return (handle_t)name;
+}
+
+static void thread_host_call(void *data) {
+    thread_host = SDL_ThreadID();
+    (*(uint32_t *)data)++;
+}
+
+/* A fake game callback holds the real scheduler open while the owner renders a frame. */
+static void thread_game_tick(void) {
+    thread_tick = SDL_ThreadID(); thread_saw_time = sv.time;
+    SDL_SemPost(thread_entered);
+    thread_released = SDL_SemWaitTimeout(thread_release, 1000) == 0;
+    SV_CallOnMain(thread_host_call, &thread_calls);
+    char name[] = "stack-owned-resource", action[] = "menu", arg[] = "mission-result";
+    uint32_t size = 0;
+    gi.MenuAction(action, arg);
+    char const *file = gi.ReadFile(name, &size);
+    snprintf(thread_file, sizeof(thread_file), "%.*s", (int)size, file);
+    vec2_t position = { 37, -19 };
+    gi.MinimapPing(NULL, &position, 2.5f, (color32_t){ 11, 23, 35, 47 }, 5);
+}
+
+static void thread_snapshot_tick(void) {
+    SDL_SemPost(thread_entered);
+    thread_released = SDL_SemWaitTimeout(thread_release, 1000) == 0;
+    EDICT_NUM(2)->s.origin.x = 37;
+}
+
+static void thread_packet_hook(NETSOURCE source, int size, void const *data, netadr_t to) {
+    (void)size; (void)data;
+    if (source == NS_SERVER) thread_sent[to.type == NA_LOOPBACK ? 0 : 1]++;
 }
 
 static cstring_t test_theme_value(cstring_t filename) {
@@ -210,6 +271,90 @@ static void reset_server_state(int max_players) {
     test_ge.WriteClientDatagram = test_write_client_datagram;
     ge = &test_ge;
     reset_test_gi();
+}
+
+TEST(server_net, threaded_tick_overlaps_owner_and_marshals_host_calls_before_shutdown) {
+    NET_Shutdown(); reset_server_state(1); test_client_stubs_clear_cvars();
+    thread_owner = SDL_ThreadID(); thread_calls = 0; thread_host = 0;
+    thread_entered = SDL_CreateSemaphore(0); thread_release = SDL_CreateSemaphore(0);
+    T_NOT_NULL(thread_entered); T_NOT_NULL(thread_release);
+    sv.state = ss_game; svs.initialized = true; test_ge.RunFrame = thread_game_tick;
+    gi.MenuAction = thread_menu_call; gi.ReadFile = thread_read_call;
+    gi.MinimapPing = thread_ping_call;
+    SV_BindHostImports(&gi);
+    FOR_LOOP(i, 2) {
+        SV_PrepareFrame(FRAMETIME); SV_StartPreparedFrame(true);
+        T_EQ(SDL_SemWaitTimeout(thread_entered, 2000), 0);
+        T_NE(thread_tick, thread_owner); T_EQ(thread_calls, i * 4);
+        SDL_SemPost(thread_release);
+        if (i) SV_Shutdown(); else SV_EndFrame();
+        T_ASSERT(thread_released); T_EQ(thread_host, thread_owner); T_EQ(thread_calls, (i + 1) * 4);
+        T_STREQ(thread_argument, "menu:mission-result"); T_STREQ(thread_file, "stack-owned-resource");
+        T_FEQ(thread_position.x, 37, 0); T_FEQ(thread_position.y, -19, 0);
+        T_FEQ(thread_duration, 2.5f, 0); T_EQ(thread_color.a, 47); T_EQ(thread_flags, 5);
+        T_EQ(thread_saw_time, (i + 1) * FRAMETIME);
+    }
+    T_EQ(sv.state, ss_dead);
+    SV_StopThread(); SV_StopThread();
+    SDL_DestroySemaphore(thread_entered); SDL_DestroySemaphore(thread_release);
+    reset_server_state(1); sv.state = ss_game; sv.paused = true;
+    SV_PrepareFrame(FRAMETIME); SV_StartPreparedFrame(true); SV_EndFrame(); T_EQ(sv.framenum, 0);
+    sv.paused = false; SV_PrepareFrame(FRAMETIME); SV_StartPreparedFrame(true); SV_EndFrame(); T_EQ(sv.framenum, 1);
+    SV_StopThread();
+}
+
+TEST(server_net, threaded_tick_publishes_completed_snapshots_to_local_and_remote_players) {
+    static struct client_s clients[2];
+    NET_Shutdown(); reset_server_state(2); test_client_stubs_clear_cvars(); SV_InitGame();
+    memset(clients, 0, sizeof(clients)); memset(thread_sent, 0, sizeof(thread_sent));
+    svs.num_clients = 2;
+    FOR_LOOP(i, 2) {
+        svs.clients[i].state = cs_spawned; svs.clients[i].edict = EDICT_NUM(i);
+        SZ_Init(&svs.clients[i].netchan.message, svs.clients[i].netchan.message_buf, MAX_MSGLEN);
+        svs.clients[i].lastframe = ~0u;
+        EDICT_NUM(i)->client = &clients[i]; clients[i].ps.number = i;
+        clients[i].ps.stats[0] = 71 + i;
+        svs.clients[i].netchan.remote_address.type = i ? NA_IP : NA_LOOPBACK;
+    }
+    EDICT_NUM(2)->inuse = true; EDICT_NUM(2)->s.number = 2; EDICT_NUM(2)->s.model = 1;
+    test_ge.num_edicts = 3; test_ge.RunFrame = thread_snapshot_tick; sv.state = ss_game;
+    thread_entered = SDL_CreateSemaphore(0); thread_release = SDL_CreateSemaphore(0);
+    NET_SetPacketHook(thread_packet_hook);
+    SV_PrepareFrame(FRAMETIME); SV_StartPreparedFrame(true);
+    T_EQ(SDL_SemWaitTimeout(thread_entered, 2000), 0);
+    T_EQ(thread_sent[0], 0); T_EQ(thread_sent[1], 0);
+    T_EQ(svs.clients[0].built_frames, 0); T_EQ(svs.clients[1].built_frames, 0);
+    SDL_SemPost(thread_release); SV_EndFrame();
+    T_ASSERT(thread_released); T_EQ(thread_sent[0], 1); T_EQ(thread_sent[1], 1);
+    FOR_LOOP(i, 2) {
+        clientFrame_t const *frame = &svs.clients[i].frames[0];
+        T_EQ(frame->framenum, 1); T_EQ(frame->ps.number, i); T_EQ(frame->ps.stats[0], 71 + i);
+        T_EQ(frame->num_entities, 1);
+        entityState_t const *entity = &svs.client_entities[frame->first_entity % svs.num_client_entities];
+        T_FEQ(entity->origin.x, 37, 0);
+    }
+    SV_EndFrame(); T_EQ(thread_sent[0], 1); T_EQ(thread_sent[1], 1);
+    NET_SetPacketHook(NULL); SV_Shutdown();
+    SDL_DestroySemaphore(thread_entered); SDL_DestroySemaphore(thread_release);
+}
+
+TEST(server_net, prepared_tick_services_long_loading_gap_and_cancels_on_pause_or_shutdown) {
+    NET_Shutdown(); reset_server_state(1); test_client_stubs_clear_cvars();
+    SV_InitGame(); sv.state = ss_game; SV_ClientConnect(); NET_ClearLoopPackets(NS_CLIENT);
+    uint8_t packet[MAX_MSGLEN]; netadr_t from;
+    sizeBuf_t msg = { .data = packet, .maxsize = sizeof(packet) };
+    SV_PrepareFrame(60000);
+    T_EQ(sv.time, 0); T_EQ(sv.framenum, 0);
+    T_ASSERT(NET_GetPacket(NS_CLIENT, &from, &msg) > 0); T_EQ(MSG_ReadByte(&msg), svc_nop);
+    SV_SetPaused(true); SV_StartPreparedFrame(true); SV_EndFrame();
+    T_EQ(sv.framenum, 0);
+    SV_SetPaused(false); SV_PrepareFrame(FRAMETIME); SV_EndFrame();
+    T_EQ(sv.framenum, 0);
+    SV_PrepareFrame(FRAMETIME); SV_StartPreparedFrame(false); SV_EndFrame();
+    T_EQ(sv.framenum, 1); T_EQ(sv.time, FRAMETIME);
+    SV_PrepareFrame(FRAMETIME); SV_Shutdown();
+    T_EQ(sv.framenum, 1); T_EQ(sv.state, ss_dead);
+    SV_StartPreparedFrame(true); SV_EndFrame(); T_EQ(sv.framenum, 1);
 }
 
 TEST(server_net, ready_wait_keeps_handshake_alive_without_advancing_simulation) {
@@ -927,6 +1072,13 @@ TEST(server_net, local_map_uses_loopback_without_udp) {
     T_ASSERT(!NET_IsConfigured(NS_CLIENT));
     T_ASSERT(!NET_IsConfigured(NS_SERVER));
 
+    /* A replacement map must discard the old map's reserved tick, even before a worker starts. */
+    test_ge.RunFrame = test_count_map_frame; test_map_frame_calls = 0;
+    test_client_stubs_set_cvar("sv_wait_for_begin", "0");
+    SV_PrepareFrame(FRAMETIME); T_EQ(test_map_frame_calls, 0);
+    SV_Map("Maps\\Melee\\Replacement.w3m");
+    SV_StartPreparedFrame(true); SV_EndFrame();
+    T_EQ(test_map_frame_calls, 0); T_EQ(sv.framenum, 0);
     SV_Shutdown();
     test_mapinfo = NULL;
 }

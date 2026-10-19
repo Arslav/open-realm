@@ -4,6 +4,12 @@
 #include "../common/common.h"
 #include "game.h"
 
+void SV_StartGameFrame(void);
+void SV_RunGameFrame(void);
+void SV_JoinGameFrame(void);
+void SV_CallOnMain(void (*call)(void *), void *data);
+void SV_BindHostImports(struct game_import *imports);
+
 #include "../common/mpq.h"
 
 #define EDICT_NUM(n) ((edict_t *)((string_t)ge->edicts + ge->edict_size*(n)))

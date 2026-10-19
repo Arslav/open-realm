@@ -1,4 +1,5 @@
 #include "r_local.h"
+#include "r_random.h"
 #include "r_game.h"
 #include "r_shader.h"
 #include "stb/stb_image.h"
@@ -800,6 +801,7 @@ static void R_UpdateSwapInterval(void) {
 }
 
 void R_InitRenderer(uint32_t width, uint32_t height) {
+    R_SeedRandom(1);
     renderer_shutdown = false;
     R_ResetShaderBinding(true);
     r_swapinterval = -999;

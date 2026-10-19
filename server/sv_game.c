@@ -187,6 +187,7 @@ void SV_InitGameProgs(void) {
     import.DeleteSave = FS_DeleteSave;
     import.SaveLocalClientState = Cvar_Integer("dedicated", 0) ? NULL : CL_ControlGroupsSave;
 
+    SV_BindHostImports(&import);
     ge = GetGameAPI(&import);
     ge->Init();
 }

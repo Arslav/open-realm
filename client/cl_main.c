@@ -1542,7 +1542,7 @@ static void CL_SendSoundEvents(void) {
     }
 }
 
-void CL_Frame(uint32_t msec) {
+void CL_UpdateFrame(uint32_t msec) {
     cl_realtime += msec;
     cl.time += msec;
 
@@ -1578,8 +1578,10 @@ void CL_Frame(uint32_t msec) {
     } else if (cls.state == ca_active) {
         CL_PrepRefresh();
     }
-    SCR_UpdateScreen(msec);
 }
+
+/* Synchronous tool/acceptance callers still own a complete client frame. */
+void CL_Frame(uint32_t msec) { CL_UpdateFrame(msec); SCR_UpdateScreen(msec); }
 
 #if defined(BZ_TESTS) && defined(BZ_CLIENT_WORLD)
 #include "shared/test.h"

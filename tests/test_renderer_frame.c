@@ -1,6 +1,7 @@
 #include "test.h"
 #include "renderer/r_local.h"
 #include "renderer/r_shader.h"
+#include "common/online.h"
 #include <stdarg.h>
 extern SDL_Window *window;
 
@@ -47,6 +48,26 @@ static int frame_profile_printf(FILE *stream, cstring_t format, ...) {
     va_end(args); frame_profile_reports++; return size;
 }
 
+static char frame_order[16];
+static uint32_t frame_order_count;
+static bool frame_polled, frame_prepared;
+static void frame_mark(char mark) { frame_order[frame_order_count++] = mark; }
+static void frame_online(uint32_t msec) { (void)msec; frame_polled = frame_prepared = false; frame_mark('O'); }
+static void frame_update(uint32_t msec) { (void)msec; T_ASSERT(frame_polled); frame_mark('U'); }
+static void frame_draw(uint32_t msec) { (void)msec; frame_mark('R'); }
+static void frame_server_sync(uint32_t msec) { (void)msec; frame_polled = true; frame_mark('Y'); }
+static void frame_server_prepare(uint32_t msec) {
+    (void)msec; frame_polled = frame_prepared = true; frame_mark('P');
+}
+static void frame_server_start(bool threaded) {
+    if (frame_prepared) frame_mark(threaded ? 'S' : 'Y');
+    frame_prepared = false;
+}
+static void frame_server_end(void) { frame_mark('J'); }
+static bool frame_needs_server(void) { return true; }
+static bool frame_movie_active(void) { return false; }
+static void frame_quit(void) { T_ASSERT(false); }
+
 /* Exercise real presentation/pacing with controlled configuration and captured clock, OS and profiler calls. */
 #define SDL_Delay frame_delay
 #define SDL_GL_SwapWindow frame_swap
@@ -76,7 +97,27 @@ static int frame_profile_printf(FILE *stream, cstring_t format, ...) {
 #define main FrameTestEngineMain
 #define SDL_GetPerformanceFrequency frame_frequency
 #define fprintf frame_profile_printf
+#define Online_Frame frame_online
+#define CL_UpdateFrame frame_update
+#define SCR_UpdateScreen frame_draw
+#define SV_PrepareFrame frame_server_prepare
+#define SV_StartPreparedFrame frame_server_start
+#define SV_Frame frame_server_sync
+#define SV_EndFrame frame_server_end
+#define SV_NeedsFrame frame_needs_server
+#define CL_MovieActive frame_movie_active
+#define Com_Quit frame_quit
 #include "common/main.c"
+#undef Com_Quit
+#undef CL_MovieActive
+#undef SV_NeedsFrame
+#undef SV_EndFrame
+#undef SV_Frame
+#undef SV_PrepareFrame
+#undef SV_StartPreparedFrame
+#undef SCR_UpdateScreen
+#undef CL_UpdateFrame
+#undef Online_Frame
 #undef fprintf
 #undef SDL_GetPerformanceFrequency
 #undef main
@@ -87,6 +128,22 @@ static int frame_profile_printf(FILE *stream, cstring_t format, ...) {
 #undef SDL_GL_SetSwapInterval
 #undef SDL_GL_SwapWindow
 #undef SDL_Delay
+
+struct client_static cls;
+void Cbuf_AddText(cstring_t text) { (void)text; T_ASSERT(false); }
+void Cbuf_Execute(void) { T_ASSERT(false); }
+
+TEST(renderer_frame, engine_scheduler_polls_transport_before_client_then_overlaps_tick_with_draw) {
+    memset(frame_order, 0, sizeof(frame_order)); frame_order_count = 0;
+    cls.state = ca_active;
+    openrealm_frame_state_t state = { .previous_time = frame_ticks() };
+    OpenRealm_Frame(&state);
+    T_STREQ(frame_order, "OPUSRJ"); T_EQ(state.frame_count, 1);
+    memset(frame_order, 0, sizeof(frame_order)); frame_order_count = 0;
+    cls.state = ca_connected;
+    OpenRealm_Frame(&state);
+    T_STREQ(frame_order, "OYURJ"); T_EQ(state.frame_count, 2);
+}
 
 void R_ProfileStage(renderPass_t pass) {
     if (frame_test.stages < sizeof(frame_test.passes) / sizeof(*frame_test.passes))

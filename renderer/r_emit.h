@@ -2,6 +2,7 @@
 #define r_emit_h
 
 #include "r_local.h"
+#include "r_random.h"
 #include <math.h>
 #include <stdlib.h>
 
@@ -16,16 +17,16 @@ static inline void R_EncodeParticleSize(cparticle_t *particle, float const value
 }
 
 static vec3_t FX_GenerateRandomDirection(float latitude) {
-	float theta = (float)(((double)rand() / (double)RAND_MAX) * 2.0 * M_PI);
-	float phi = (float)(((double)rand() / (double)RAND_MAX) * latitude);
+	float theta = (float)(R_Random() * 2.0 * M_PI);
+	float phi = R_Random() * latitude;
 	return (vec3_t){ sinf(phi) * cosf(theta), sinf(phi) * sinf(theta), cosf(phi) };
 }
 
 __attribute__((unused))
 static vec3_t FX_GenerateRandomOrigin(float length, float width) {
 	return (vec3_t){
-		(float)(((double)rand() / (double)RAND_MAX - 0.5) * length),
-		(float)(((double)rand() / (double)RAND_MAX - 0.5) * width),
+		(R_Random() - 0.5f) * length,
+		(R_Random() - 0.5f) * width,
 		0.0f,
 	};
 }
