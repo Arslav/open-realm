@@ -2,6 +2,14 @@
 
 ## Contract
 
+The owner's October 19, 2026 policy keeps experimental payloads outside this
+Git repository. Preserve source snapshots and raw measurements in a separate
+archive, verify its file hashes before removing an in-tree copy, and keep only
+implementation code, tests, recipes and concise conclusions in the repository.
+Set `OPENREALM_EXPERIMENTS_DIR` to that archive root when following external
+paths in the subsystem documents. Never add benchmark screenshots, raw logs,
+APK symbols or whole-tree source snapshots under a tracked `experiments/`.
+
 The project owner's instruction of October 18, 2026 is to preserve optimizations
 even when they show no immediate gain. A different device, scene, renderer path
 or later optimization may change their value. Negative measurements are useful
