@@ -946,6 +946,8 @@ static uint32_t map_doodad_override_count;
 static mapAbilityOverride_t *map_ability_overrides;
 static uint32_t map_ability_override_count;
 static uint32_t ability_data_generation;
+#define BZ_ABILITY_CODE_SLOTS 2048 // entries; direct-mapped rawcode aliases, invalidated by authored-data generation
+static struct { uint32_t id, code, generation; } ability_codes[BZ_ABILITY_CODE_SLOTS];
 
 typedef struct {
     cstring_t name, path;
@@ -2150,7 +2152,24 @@ abilityLevel_t const *G_AbilityLevel(uint32_t id, uint32_t level) {
     return row->level + level - 1;
 }
 AbilityBuffData_t const *G_AbilityBuffData(uint32_t id) { static AbilityBuffData_t zero; AbilityBuffData_t *row = FS_SLKLookup(&ability_buff_idx, id); return row ? row : &zero; }
-uint32_t G_AbilityCode(uint32_t id) { uint32_t code = G_AbilityData(id)->code; return code ? code : id; }
+#ifdef BZ_TESTS
+uint32_t G_TestAbilityCodeLookups;
+#endif
+uint32_t G_AbilityCode(uint32_t id) {
+    uint32_t slot = (id * 2654435761u) >> 21;
+    if (g_ability_cache && ability_codes[slot].generation == ability_data_generation && ability_codes[slot].id == id)
+        return ability_codes[slot].code;
+#ifdef BZ_TESTS
+    G_TestAbilityCodeLookups++;
+#endif
+    uint32_t code = G_AbilityData(id)->code;
+    code = code ? code : id;
+    if (g_ability_cache) {
+        ability_codes[slot].id = id; ability_codes[slot].code = code;
+        ability_codes[slot].generation = ability_data_generation;
+    }
+    return code;
+}
 uint32_t G_AbilityCodeName(cstring_t name) { return G_AbilityCode(FS_SLKKey(name)); }
 bool G_AbilityHasUnitIdOverride(uint32_t id) {
     mapAbilityOverride_t const *override = FindMapAbilityOverride(id);
@@ -2507,6 +2526,7 @@ void InitUnitData(void) {
 uint32_t G_AbilityDataGeneration(void) { return ability_data_generation; }
 
 void ShutdownUnitData(void) {
+    S_ClearAbilityQueries();
     G_SetMapUnitOverrides(NULL);
     G_SetMapAbilityOverrides(NULL);
     FS_SLKFreeIndex(&profile_idx);

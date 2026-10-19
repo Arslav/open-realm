@@ -3171,6 +3171,9 @@ void S_AbilityCommand(edict_t *clent, ability_t const *ability);
 ability_t const *GetAbilityByIndex(uint32_t);
 uint32_t FindAbilityIndex(cstring_t);
 void InitAbilities(void);
+extern bool g_ability_cache;
+void S_UpdateAbilityQueries(void);
+void S_ClearAbilityQueries(void);
 #ifdef WC3_DEBUG_AUTOCAST
 int G_AutocastDebugLevel(void);
 #endif

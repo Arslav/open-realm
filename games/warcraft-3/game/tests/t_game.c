@@ -3714,6 +3714,58 @@ TEST(wc3_game, fow_grid_uses_two_by_two_cells_per_tile) {
     G_FowShutdown();
 }
 
+TEST(wc3_game, fow_disk_spans_preserve_each_state_dirty_rows_and_idempotence) {
+    extern uint32_t G_TestFowCellWrites;
+    uint32_t states[] = {WC3_FOG_STATE_VISIBLE, WC3_FOG_STATE_FOGGED, WC3_FOG_STATE_MASKED};
+    FOR_LOOP(s, 3) {
+        reset_entities(); G_FowInit();
+        fowPlayerGrid_t *grid = &level.fow.players[0];
+        uint8_t v[48], e[48], dirty_v[6] = {0}, dirty_e[6] = {0};
+        T_EQ(level.fow.width * level.fow.height, 48);
+        FOR_LOOP(i, 48) grid->visible[i] = v[i] = i % 3, grid->explored[i] = e[i] = i % 2;
+        memset(grid->visible_rows, 1, 6);
+        memset(grid->dirty_visible_rows, 0, 6); memset(grid->dirty_explored_rows, 0, 6);
+        G_TestFowCellWrites = 0;
+        G_FowSetStateRadius(&(fogWrite_t){0, states[s], false}, &(vec2_t){224, 160}, 96);
+        T_ASSERT(G_TestFowCellWrites <= 5); /* Five horizontal disk spans, independent of their cell counts. */
+        FOR_LOOP(y, 6) FOR_LOOP(x, 8) {
+            uint32_t i = y * 8 + x;
+            bool inside = ((int)x - 3) * ((int)x - 3) + ((int)y - 2) * ((int)y - 2) <= 4;
+            uint8_t want_v = v[i], want_e = e[i];
+            if (inside) {
+                want_v = states[s] == WC3_FOG_STATE_VISIBLE ? (v[i] ? v[i] : 1) : 0;
+                want_e = states[s] == WC3_FOG_STATE_MASKED ? 0 : (e[i] ? e[i] : 1);
+            }
+            dirty_v[y] |= want_v != v[i]; dirty_e[y] |= want_e != e[i];
+            T_EQ(grid->visible[i], want_v); T_EQ(grid->explored[i], want_e);
+        }
+        FOR_LOOP(y, 6) { T_EQ(grid->dirty_visible_rows[y], dirty_v[y]); T_EQ(grid->dirty_explored_rows[y], dirty_e[y]); }
+        memset(grid->dirty_visible_rows, 0, 6); memset(grid->dirty_explored_rows, 0, 6);
+        G_FowSetStateRadius(&(fogWrite_t){0, states[s], false}, &(vec2_t){224, 160}, 96);
+        FOR_LOOP(y, 6) { T_EQ(grid->dirty_visible_rows[y], 0); T_EQ(grid->dirty_explored_rows[y], 0); }
+        G_FowShutdown();
+    }
+}
+
+TEST(wc3_game, fow_blocker_box_queries_are_bounded_and_rebuilt_from_current_cells) {
+    extern uint32_t G_TestFowBlockerLookups;
+    extern bool G_TestFowBlockerBox(int, int, int, int);
+    reset_entities(); G_FowInit(); G_FowConnectPlayer(0);
+    edict_t *blocker = alloc_test_unit(MAKEFOURCC('L','T','l','t'), 480, 352);
+    blocker->s.flags |= EF_FOW_BLOCKER; blocker->health.value = blocker->health.max_value = 1;
+    G_FowUpdate(); G_TestFowBlockerLookups = 0;
+    T_ASSERT(!G_TestFowBlockerBox(0, 0, 4, 3));
+    T_ASSERT(G_TestFowBlockerLookups <= 4);
+    T_ASSERT(G_TestFowBlockerBox(7, 5, 7, 5));
+    T_ASSERT(G_TestFowBlockerBox(-10, -10, 100, 100));
+    T_ASSERT(!G_TestFowBlockerBox(8, 0, 9, 5));
+    /* Explicit byte-grid changes are observed on the next update even without a blocker rebuild. */
+    level.fow.blocked[0] = 1; G_FowUpdate(); T_ASSERT(G_TestFowBlockerBox(0, 0, 0, 0));
+    blocker->s.flags &= ~EF_FOW_BLOCKER; G_FowMarkBlockersDirty(); G_FowUpdate();
+    T_ASSERT(!G_TestFowBlockerBox(0, 0, 7, 5));
+    G_FowShutdown(); G_FowInit(); T_ASSERT(!G_TestFowBlockerBox(0, 0, 7, 5)); G_FowShutdown();
+}
+
 TEST(wc3_game, fow_revealer_marks_visible_and_explored) {
     reset_entities();
     G_FowInit();
@@ -3730,6 +3782,21 @@ TEST(wc3_game, fow_revealer_marks_visible_and_explored) {
     T_ASSERT(level.fow.players[0].visible[index]);
     T_ASSERT(level.fow.players[0].explored[index]);
     G_FowShutdown();
+}
+
+TEST(wc3_game, fow_blocker_prefix_allocation_failure_keeps_exact_queries_and_recovers) {
+    extern bool G_TestFowPrefixAllocationFails;
+    extern uint32_t G_TestFowBlockerLookups;
+    extern bool G_TestFowBlockerBox(int, int, int, int);
+    reset_entities(); G_FowInit(); G_FowConnectPlayer(0);
+    edict_t *blocker = alloc_test_unit(MAKEFOURCC('L','T','l','t'), 480, 352);
+    blocker->s.flags |= EF_FOW_BLOCKER; blocker->health.value = blocker->health.max_value = 1;
+    G_TestFowPrefixAllocationFails = true; G_FowUpdate(); G_TestFowBlockerLookups = 0;
+    T_ASSERT(!G_TestFowBlockerBox(0, 0, 4, 3)); T_ASSERT(G_TestFowBlockerLookups > 4);
+    T_ASSERT(G_TestFowBlockerBox(7, 5, 7, 5));
+    G_TestFowPrefixAllocationFails = false; G_FowUpdate(); G_TestFowBlockerLookups = 0;
+    T_ASSERT(!G_TestFowBlockerBox(0, 0, 4, 3)); T_ASSERT(G_TestFowBlockerLookups <= 4);
+    T_ASSERT(G_TestFowBlockerBox(7, 5, 7, 5)); G_FowShutdown();
 }
 
 TEST(wc3_game, fow_updates_only_connected_shared_viewers) {
@@ -3944,6 +4011,209 @@ TEST(wc3_game, hold_position_acquires_within_uacq_not_attack_range) {
 
     guard->currentmove->think(guard);
     T_ASSERT(guard->goalentity == enemy);
+}
+
+static bool fow_shadow_cache_on = true;
+static bool frame_queries_on;
+static cstring_t frame_queries_cvar(cstring_t name, cstring_t fallback) {
+    return !strcmp(name, "wc3_ability_cache") ? (frame_queries_on ? "1" : "0") : fallback;
+}
+
+TEST(wc3_game, query_options_follow_the_real_frame_boundary) {
+    cstring_t (*old)(cstring_t, cstring_t) = gi.CvarString;
+    reset_entities(); setup_test_world();
+    T_ASSERT(run_test_jass("function main takes nothing returns nothing\nendfunction\n"));
+    level.started = level.scriptsConfigured = level.scriptsStarted = true;
+    gi.CvarString = frame_queries_cvar; frame_queries_on = true;
+    globals.RunFrame(); T_ASSERT(g_ability_cache);
+    frame_queries_on = false; globals.RunFrame(); T_ASSERT(!g_ability_cache);
+    gi.CvarString = old; S_UpdateAbilityQueries();
+}
+
+static cstring_t visibility_fast_cvar(cstring_t name, cstring_t fallback) {
+    return !strcmp(name, "wc3_visibility_fast") ? "1" : fallback;
+}
+
+/* The zero-source case skips owner walks without maintaining derived state beside saved reference counts. */
+TEST(wc3_game, forced_visibility_fast_zero_and_live_reference_counts) {
+    extern uint32_t G_TestForcedVisibilityOwners;
+    cstring_t (*old)(cstring_t, cstring_t) = gi.CvarString;
+    reset_entities(); setup_test_world();
+    edict_t *unit = alloc_test_unit(MAKEFOURCC('h','f','o','o'), 0, 0);
+    gi.CvarString = visibility_fast_cvar; G_FowUpdate();
+    G_TestForcedVisibilityOwners = 0;
+    T_ASSERT(!G_UnitIsForcedVisibleToPlayer(unit, 0));
+    T_EQ(G_TestForcedVisibilityOwners, 0);
+    G_AddUnitForcedVisibility(unit, 15); G_AddUnitForcedVisibility(unit, 15);
+    T_ASSERT(G_UnitIsForcedVisibleToPlayer(unit, 15));
+    T_ASSERT(!G_UnitIsForcedVisibleToPlayer(unit, 0));
+    level.alliances[15][0] |= 1 << ALLIANCE_SHARED_VISION;
+    T_ASSERT(G_UnitIsForcedVisibleToPlayer(unit, 0));
+    level.alliances[15][0] = 0;
+    T_ASSERT(!G_UnitIsForcedVisibleToPlayer(unit, 0));
+    G_RemoveUnitForcedVisibility(unit, 15); T_ASSERT(G_UnitIsForcedVisibleToPlayer(unit, 15));
+    G_RemoveUnitForcedVisibility(unit, 15); G_RemoveUnitForcedVisibility(unit, 15);
+    G_TestForcedVisibilityOwners = 0;
+    T_ASSERT(!G_UnitIsForcedVisibleToPlayer(unit, 15)); T_EQ(G_TestForcedVisibilityOwners, 0);
+    unit->forced_visibility_count[15] = 0xffffu; G_AddUnitForcedVisibility(unit, 15);
+    T_EQ(unit->forced_visibility_count[15], 0xffffu);
+    T_ASSERT(G_UnitIsForcedVisibleToPlayer(unit, 15));
+    T_ASSERT(!G_UnitIsForcedVisibleToPlayer(unit, MAX_PLAYERS));
+    gi.CvarString = old; G_FowUpdate();
+}
+
+static cstring_t fow_shadow_cache_cvar(cstring_t name, cstring_t fallback) {
+    return !strcmp(name, "wc3_fow_cache") ? (fow_shadow_cache_on ? "1" : "0") : fallback;
+}
+
+/* Repeated exact sight keeps both planes/row metadata but does no recursive cast work. */
+TEST(wc3_game, fow_shadow_cache_reuses_exact_cells_and_invalidates_bitmap_changes) {
+    extern uint32_t G_TestFowCastCalls;
+    cstring_t (*old_cvar)(cstring_t, cstring_t) = gi.CvarString;
+    reset_entities(); G_FowInit(); G_FowConnectPlayer(0);
+    edict_t *unit = alloc_test_unit(MAKEFOURCC('h','p','e','a'), 96, 96);
+    unit->s.player = 0; unit->runtime.sight_radius.day = unit->runtime.sight_radius.night = 256;
+    edict_t *tree = alloc_test_unit(MAKEFOURCC('L','T','l','t'), 160, 96);
+    tree->s.flags |= EF_FOW_BLOCKER;
+    fow_shadow_cache_on = true; gi.CvarString = fow_shadow_cache_cvar;
+    G_FowUpdate();
+    uint8_t visible[48], explored[48];
+    memcpy(visible, level.fow.players[0].visible, sizeof(visible));
+    memcpy(explored, level.fow.players[0].explored, sizeof(explored));
+    T_ASSERT(run_test_jass("function main takes nothing returns nothing\nendfunction\n"));
+    level.started = level.scriptsConfigured = level.scriptsStarted = true;
+    G_TestFowCastCalls = 0; globals.RunFrame();
+    T_EQ(G_TestFowCastCalls, 0);
+    T_EQ(memcmp(visible, level.fow.players[0].visible, sizeof(visible)), 0);
+    T_EQ(memcmp(explored, level.fow.players[0].explored, sizeof(explored)), 0);
+    /* Direct byte-grid edits must invalidate even when the entity blocker hash stays clean. */
+    level.fow.blocked[2 + 2 * 8] ^= 1;
+    G_TestFowCastCalls = 0; G_FowUpdate(); T_ASSERT(G_TestFowCastCalls > 0);
+    G_TestFowCastCalls = 0; G_FowUpdate(); T_EQ(G_TestFowCastCalls, 0);
+    unit->s.origin.x += 64;
+    G_TestFowCastCalls = 0; G_FowUpdate(); T_ASSERT(G_TestFowCastCalls > 0);
+    unit->runtime.sight_radius.day = unit->runtime.sight_radius.night = 192;
+    G_TestFowCastCalls = 0; G_FowUpdate(); T_ASSERT(G_TestFowCastCalls > 0);
+    gi.CvarString = old_cvar; G_FowShutdown();
+}
+
+/* Compare the live writers, including ordered blocker rims, sharing and fog modifiers, over changing scenes. */
+TEST(wc3_game, fow_shadow_cache_matches_uncached_planes_rows_and_modifiers) {
+    extern void CM_SetupTestWorldBounds(box2_t const *bounds);
+    cstring_t (*old_cvar)(cstring_t, cstring_t) = gi.CvarString;
+    uint8_t expected[16][3][2 * 35 * 27 + 3 * 27];
+    box2_t bounds = CM_GetWorldBounds();
+    FOR_LOOP(mode, 2) {
+        reset_entities(); CM_SetupTestWorldBounds(&(box2_t){.max = {35 * 64, 27 * 64}}); G_FowInit();
+        memset(level.alliances, 0, sizeof(level.alliances));
+        level.alliances[0][1] |= 1u << ALLIANCE_SHARED_VISION;
+        FOR_LOOP(p, 3) G_FowConnectPlayer(p);
+        edict_t *units[32];
+        FOR_LOOP(i, 32) {
+            units[i] = alloc_test_unit(MAKEFOURCC('h','p','e','a'), (i * 7 % 35) * 64 + 31, (i * 11 % 27) * 64 + 31);
+            units[i]->s.player = i % 3; units[i]->shared_vision = 1u << ((i + 1) % 3);
+            units[i]->runtime.sight_radius.day = units[i]->runtime.sight_radius.night = (i % 5 + 1) * 192;
+        }
+        edict_t *tree = alloc_test_unit(MAKEFOURCC('L','T','l','t'), 13 * 64 + 31, 9 * 64 + 31);
+        tree->s.flags |= EF_FOW_BLOCKER;
+        fogModifier_t mod = {.player = 0, .state = WC3_FOG_STATE_MASKED, .is_rect = true,
+            .rect = {{5 * 64, 4 * 64}, {12 * 64, 8 * 64}}, .use_shared_vision = true, .started = true};
+        G_FogModifierStart(&mod);
+        fow_shadow_cache_on = mode != 0; gi.CvarString = fow_shadow_cache_cvar;
+        FOR_LOOP(step, 16) {
+            if (!(step % 4)) {
+                G_FowMarkBlockersDirty(); G_FowUpdate();
+                FOR_LOOP(y, 27) FOR_LOOP(x, 35) level.fow.blocked[y * 35 + x] = (x * 11 + y * 7 + step) % 23 < 4;
+                level.fow.num_blocked = 1;
+            }
+            if (step == 6) units[0]->s.origin.x += 64;
+            if (step == 8) units[1]->runtime.sight_radius.day = units[1]->runtime.sight_radius.night = 31 * 64;
+            if (step == 10) units[2]->runtime.sight_radius.day = units[2]->runtime.sight_radius.night = 32 * 64;
+            if (step == 12) units[3]->health.value = 0;
+            mod.state = 1u << (step % 3);
+            FOR_LOOP(p, 3) {
+                memset(level.fow.players[p].dirty_visible_rows, 0, 27);
+                memset(level.fow.players[p].dirty_explored_rows, 0, 27);
+            }
+            G_FowUpdate();
+            FOR_LOOP(p, 3) {
+                fowPlayerGrid_t *grid = &level.fow.players[p];
+                uint8_t data[2 * 35 * 27 + 3 * 27];
+                memcpy(data, grid->visible, 35 * 27); memcpy(data + 35 * 27, grid->explored, 35 * 27);
+                memcpy(data + 2 * 35 * 27, grid->visible_rows, 27);
+                memcpy(data + 2 * 35 * 27 + 27, grid->dirty_visible_rows, 27);
+                memcpy(data + 2 * 35 * 27 + 54, grid->dirty_explored_rows, 27);
+                if (!mode) memcpy(expected[step][p], data, sizeof(data));
+                else T_EQ(memcmp(expected[step][p], data, sizeof(data)), 0);
+            }
+        }
+        G_FowShutdown();
+    }
+    gi.CvarString = old_cvar; CM_SetupTestWorldBounds(&bounds);
+}
+
+TEST(wc3_game, fow_shadow_cache_toggle_large_radius_and_map_reset_keep_exact_casts) {
+    extern uint32_t G_TestFowCastCalls;
+    cstring_t (*old_cvar)(cstring_t, cstring_t) = gi.CvarString;
+    reset_entities(); G_FowInit(); G_FowConnectPlayer(0);
+    edict_t *unit = alloc_test_unit(MAKEFOURCC('h','p','e','a'), 96, 96);
+    unit->s.player = 0; unit->runtime.sight_radius.day = unit->runtime.sight_radius.night = 256;
+    edict_t *tree = alloc_test_unit(MAKEFOURCC('L','T','l','t'), 160, 96); tree->s.flags |= EF_FOW_BLOCKER;
+    fow_shadow_cache_on = true; gi.CvarString = fow_shadow_cache_cvar;
+    G_FowUpdate(); G_TestFowCastCalls = 0; G_FowUpdate(); T_EQ(G_TestFowCastCalls, 0);
+    fow_shadow_cache_on = false;
+    G_TestFowCastCalls = 0; G_FowUpdate(); T_ASSERT(G_TestFowCastCalls > 0);
+    fow_shadow_cache_on = true;
+    G_TestFowCastCalls = 0; G_FowUpdate(); T_EQ(G_TestFowCastCalls, 0);
+    unit->runtime.sight_radius.day = unit->runtime.sight_radius.night = 32 * 64;
+    G_FowUpdate(); G_TestFowCastCalls = 0; G_FowUpdate(); T_ASSERT(G_TestFowCastCalls > 0);
+    G_FowShutdown(); G_FowInit(); G_FowConnectPlayer(0);
+    unit->runtime.sight_radius.day = unit->runtime.sight_radius.night = 256;
+    G_TestFowCastCalls = 0; G_FowUpdate(); T_ASSERT(G_TestFowCastCalls > 0);
+    gi.CvarString = old_cvar; G_FowShutdown();
+}
+
+TEST(wc3_game, fow_shadow_cache_allocation_failure_preserves_casts_and_recovers_on_map_reset) {
+    extern bool G_TestFowCacheAllocationFails;
+    extern uint32_t G_TestFowCastCalls;
+    cstring_t (*old_cvar)(cstring_t, cstring_t) = gi.CvarString;
+    reset_entities(); G_FowInit(); G_FowConnectPlayer(0);
+    edict_t *unit = alloc_test_unit(MAKEFOURCC('h','p','e','a'), 96, 96);
+    unit->s.player = 0; unit->runtime.sight_radius.day = unit->runtime.sight_radius.night = 256;
+    edict_t *tree = alloc_test_unit(MAKEFOURCC('L','T','l','t'), 160, 96); tree->s.flags |= EF_FOW_BLOCKER;
+    fow_shadow_cache_on = true; gi.CvarString = fow_shadow_cache_cvar; G_TestFowCacheAllocationFails = true;
+    G_FowUpdate(); G_TestFowCastCalls = 0; G_FowUpdate(); T_ASSERT(G_TestFowCastCalls > 0);
+    uint8_t visible[48], explored[48];
+    memcpy(visible, level.fow.players[0].visible, sizeof(visible));
+    memcpy(explored, level.fow.players[0].explored, sizeof(explored));
+    G_TestFowCacheAllocationFails = false; G_FowShutdown(); G_FowInit(); G_FowConnectPlayer(0);
+    G_FowUpdate(); G_TestFowCastCalls = 0; G_FowUpdate(); T_EQ(G_TestFowCastCalls, 0);
+    T_EQ(memcmp(visible, level.fow.players[0].visible, sizeof(visible)), 0);
+    T_EQ(memcmp(explored, level.fow.players[0].explored, sizeof(explored)), 0);
+    gi.CvarString = old_cvar; G_FowShutdown();
+}
+
+/* The widest cached scanline occupies bits 0..62; neither ctz nor shifts may see an all-ones uint64. */
+TEST(wc3_game, fow_shadow_cache_replays_full_63_cell_span) {
+    extern void CM_SetupTestWorldBounds(box2_t const *bounds);
+    extern uint32_t G_TestFowCastCalls;
+    cstring_t (*old_cvar)(cstring_t, cstring_t) = gi.CvarString;
+    box2_t bounds = CM_GetWorldBounds();
+    reset_entities(); CM_SetupTestWorldBounds(&(box2_t){.max = {64 * 64, 64 * 64}}); G_FowInit(); G_FowConnectPlayer(0);
+    edict_t *unit = alloc_test_unit(MAKEFOURCC('h','p','e','a'), 32 * 64 + 31, 32 * 64 + 31);
+    unit->s.player = 0; unit->runtime.sight_radius.day = unit->runtime.sight_radius.night = 31 * 64;
+    edict_t *tree = alloc_test_unit(MAKEFOURCC('L','T','l','t'), 63 * 64 + 31, 63 * 64 + 31);
+    tree->s.flags |= EF_FOW_BLOCKER;
+    fow_shadow_cache_on = true; gi.CvarString = fow_shadow_cache_cvar;
+    G_FowUpdate();
+    uint8_t visible[64 * 64], explored[64 * 64];
+    memcpy(visible, level.fow.players[0].visible, sizeof(visible));
+    memcpy(explored, level.fow.players[0].explored, sizeof(explored));
+    G_TestFowCastCalls = 0; G_FowUpdate(); T_EQ(G_TestFowCastCalls, 0);
+    T_EQ(memcmp(visible, level.fow.players[0].visible, sizeof(visible)), 0);
+    T_EQ(memcmp(explored, level.fow.players[0].explored, sizeof(explored)), 0);
+    FOR_LOOP(x, 63) T_EQ(level.fow.players[0].visible[32 * 64 + x + 1], 1);
+    gi.CvarString = old_cvar; G_FowShutdown(); CM_SetupTestWorldBounds(&bounds);
 }
 
 TEST(wc3_game, fow_blocker_stops_visibility_behind_it) {

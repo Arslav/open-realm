@@ -635,7 +635,7 @@ The October 18 exact sight-cache trial exposes `wc3_fow_cache` (Android default
 B/D/D/B capture gives 17.985 → 18.911 FPS at 67% render on the mixed 200-starting-unit
 first combat. Its code, tests and on/off paths are retained. See
 measured results (`games/warcraft-3/performance.md#exact-sight-footprint-reuse-on-honor-october-18`; section follows in this series)
-and the fog cache contract (`games/warcraft-3/fog-and-cinematics.md#exact-sight-footprint-cache`; section follows in this series).
+and the [fog cache contract](games/warcraft-3/fog-and-cinematics.md#exact-sight-footprint-cache).
 
 The subsequent MDX submission experiment is opt-in: `set r_mdx_submit_cache 0`
 keeps the original shared stream, `1` selects per-model matrix streams, and `2`

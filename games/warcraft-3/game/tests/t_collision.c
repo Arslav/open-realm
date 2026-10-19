@@ -76,6 +76,62 @@ static void reset_collision_world(void) {
     setup_test_world();
 }
 
+static uint32_t (*collision_box_query)(box2_t const *, edict_t **, uint32_t, bool (*)(edict_t const *));
+static uint32_t collision_box_calls, collision_cache_full;
+
+/* Count real broad-phase traversals while keeping their original results and ordering. */
+static uint32_t collision_count_query(box2_t const *box, edict_t **out, uint32_t cap, bool (*pred)(edict_t const *)) {
+    collision_box_calls++;
+    uint32_t count = collision_box_query(box, out, cap, pred);
+    if (cap > 256 && count == cap) collision_cache_full++;
+    return count;
+}
+
+/* The deflection search changes only the trial direction: its neighbours cannot change until it returns. */
+TEST(wc3_collision, boxed_heading_reuses_neighbours_only_during_search) {
+    reset_collision_world();
+    edict_t *mover = make_collision_unit(0, 0, 16);
+    edict_t *ring[8];
+    mover->unitinfo.MoveSpeed = 200;
+    FOR_LOOP(i, 8) {
+        float angle = i * (float)M_PI / 4;
+        ring[i] = make_collision_unit(32 * cosf(angle), 32 * sinf(angle), 16);
+    }
+    collision_box_query = gi.BoxEdicts; collision_box_calls = 0;
+    gi.BoxEdicts = collision_count_query;
+    unit_changeangle_towards_point(mover, &(vec2_t){300, 0});
+    gi.BoxEdicts = collision_box_query;
+    T_ASSERT(collision_box_calls > 0 && collision_box_calls <= 2);
+    T_FEQ(mover->movement.heading, 0, 0.001f);
+    unit_moveindirection(mover);
+    T_FEQ(mover->s.origin2.x, 0, 0.001f);
+    T_FEQ(mover->s.origin2.y, 0, 0.001f);
+    FOR_LOOP(i, 8) {
+        ring[i]->s.origin.x += 400; ring[i]->s.origin2.x += 400;
+        gi.LinkEntity(ring[i]);
+    }
+    T_ASSERT(M_MoveIsValid(mover, &(vec2_t){20, 0}));
+    unit_changeangle_towards_point(mover, &(vec2_t){300, 0});
+    unit_moveindirection(mover);
+    T_ASSERT(mover->s.origin2.x > 0);
+}
+
+/* A bounded optimisation must retain the ordinary query when its larger candidate region overflows. */
+TEST(wc3_collision, crowded_heading_keeps_deflection_and_query_capacity) {
+    reset_collision_world();
+    edict_t *mover = make_collision_unit(0, 0, 16);
+    mover->unitinfo.MoveSpeed = 200;
+    FOR_LOOP(i, 258) make_collision_unit(32, 0, 16);
+    collision_box_query = gi.BoxEdicts; collision_cache_full = 0;
+    gi.BoxEdicts = collision_count_query;
+    unit_changeangle_towards_point(mover, &(vec2_t){300, 0});
+    gi.BoxEdicts = collision_box_query;
+    T_EQ(collision_cache_full, 0); /* Optional scratch must not exhaust/log the backend's output limit. */
+    T_FEQ(mover->movement.heading, (float)M_PI / 2, 0.001f);
+    T_ASSERT(!M_MoveIsValid(mover, &(vec2_t){20, 0}));
+    T_ASSERT(M_MoveIsValid(mover, &(vec2_t){-20, 0}));
+}
+
 /* -----------------------------------------------------------------------
  * G_PushEntity tests
  * --------------------------------------------------------------------- */

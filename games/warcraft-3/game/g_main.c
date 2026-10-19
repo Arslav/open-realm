@@ -1722,6 +1722,7 @@ static void G_RunFrame(void) {
     level.framenum++;
     level.time = gi.GetTime();
 
+    S_UpdateAbilityQueries();
     G_StartScripts();
     G_UpdateTimeOfDay();
     G_RunTimers();

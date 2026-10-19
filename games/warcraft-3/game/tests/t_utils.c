@@ -146,6 +146,7 @@ void setup_test_world(void) {
 
 /* Every in-engine WC3 test starts from the state contract the old standalone harness provided. */
 static void reset_test_state(void) {
+    S_ClearAbilityQueries(); S_UpdateAbilityQueries();
     G_TestResetScoreTransition();
     G_ResetDeferredFrees();
     UI_TestResetInfoPanelIconCache();

@@ -747,6 +747,64 @@ static abilityProc_t ability_index_procs[sizeof(abilitylist) / sizeof(abilitylis
 static uint32_t ability_index_values[sizeof(abilitylist) / sizeof(abilitylist[0])];
 static uint32_t num_ability_index_procs;
 
+#define BZ_ABILITY_LIST_SLOTS 512 // rows; bounded decoded-list working set shared by all units
+#define BZ_ABILITY_NAME_SLOTS 1024 // entries; registry size stays below this power-of-two index
+#ifdef __ANDROID__
+#define BZ_ABILITY_CACHE_DEFAULT "1"
+#else
+#define BZ_ABILITY_CACHE_DEFAULT "0"
+#endif
+typedef struct {
+    cstring_t key;
+    char *text;
+    uint32_t count;
+    uint32_t codes[];
+} abilityListCache_t;
+static abilityListCache_t *ability_lists[BZ_ABILITY_LIST_SLOTS];
+static ability_t const *ability_names[BZ_ABILITY_NAME_SLOTS];
+bool g_ability_cache;
+
+/* Options are read once at initialization/frame boundaries, never in each hot query. */
+void S_UpdateAbilityQueries(void) {
+    g_ability_cache = gi.CvarString && atoi(gi.CvarString("wc3_ability_cache", BZ_ABILITY_CACHE_DEFAULT));
+}
+
+void S_ClearAbilityQueries(void) {
+    FOR_LOOP(i, BZ_ABILITY_LIST_SLOTS) { free(ability_lists[i]); ability_lists[i] = NULL; }
+}
+
+/* Preserve the list parser's token rules; a text snapshot also detects in-place fixture/data edits. */
+uint32_t const *S_UnitAbilityCodes(UnitAbilities_t const *row, uint32_t *count) {
+    cstring_t text = row ? row->abilList : NULL;
+    abilityListCache_t *entry;
+    uint32_t slot, n = 0;
+    *count = 0;
+    if (!text || !*text) return NULL;
+    slot = ((uintptr_t)text >> 3) & (BZ_ABILITY_LIST_SLOTS - 1);
+    entry = ability_lists[slot];
+    if (!entry || entry->key != text || strcmp(entry->text, text)) {
+        size_t len = strlen(text) + 1;
+        char token[PARSER_MAX_SEGMENT];
+        wordExtractor_t parser = { .buffer = text, .delimiters = "" };
+        while (parse_segment_into(&parser, token, sizeof(token))) if (strlen(token) == 4) n++;
+        free(entry);
+        entry = malloc(sizeof(*entry) + (size_t)n * sizeof(uint32_t) + len);
+        if (!entry) gi.error("S_UnitAbilityCodes: unable to allocate decoded ability list");
+        entry->key = text; entry->text = (char *)(entry->codes + n); entry->count = n;
+        memcpy(entry->text, text, len); n = 0;
+        parser.buffer = text;
+        while (parse_segment_into(&parser, token, sizeof(token)))
+            if (strlen(token) == 4) memcpy(entry->codes + n++, token, sizeof(uint32_t));
+        ability_lists[slot] = entry;
+#ifdef BZ_TESTS
+        extern uint32_t G_TestAbilityListParses;
+        G_TestAbilityListParses++;
+#endif
+    }
+    *count = entry->count;
+    return entry->codes;
+}
+
 /* ROC/TFT physical data columns are normalized by the AbilityData DDX schema. */
 float AB_Data(cstring_t classname, uint32_t level, uint32_t index) {
     abilityLevel_t const *row = G_AbilityLevel(FS_SLKKey(classname), level);
@@ -1046,6 +1104,14 @@ bool S_UnitProjectileHit(edict_t *projectile) {
 }
 
 ability_t const *FindAbilityByClassname(cstring_t classname) {
+    if (g_ability_cache && classname && strlen(classname) == 4) {
+        uint32_t code = FS_SLKKey(classname), slot = (code * 2654435761u) >> 22;
+        while (ability_names[slot]) {
+            if (FS_SLKKey(ability_names[slot]->classname) == code) return ability_names[slot];
+            slot = (slot + 1) & (BZ_ABILITY_NAME_SLOTS - 1);
+        }
+        return NULL;
+    }
     FOR_LOOP(i, game.num_abilities) {
         if (!abilitylist[i].classname)
             continue;
@@ -1232,6 +1298,17 @@ void S_AbilityCommand(edict_t *clent, ability_t const *ability) {
 
 void InitAbilities(void) {
     game.num_abilities = sizeof(abilitylist)/sizeof(abilitylist[0]);
+    _Static_assert(sizeof(abilitylist) / sizeof(*abilitylist) < BZ_ABILITY_NAME_SLOTS, "Ability index needs an empty slot");
+    S_ClearAbilityQueries(); S_UpdateAbilityQueries();
+    memset(ability_names, 0, sizeof(ability_names));
+    FOR_LOOP(i, game.num_abilities) {
+        cstring_t name = abilitylist[i].classname;
+        if (!name || strlen(name) != 4) continue;
+        uint32_t code = FS_SLKKey(name), slot = (code * 2654435761u) >> 22;
+        while (ability_names[slot] && FS_SLKKey(ability_names[slot]->classname) != code)
+            slot = (slot + 1) & (BZ_ABILITY_NAME_SLOTS - 1);
+        if (!ability_names[slot]) ability_names[slot] = abilitylist + i;
+    }
     num_updates = 0;
     num_innate = 0;
     num_ability_index_procs = 0;

@@ -2282,13 +2282,16 @@ static heroability_t *G_FindRuntimeAbility(edict_t *ent, uint32_t abilcode) {
 }
 
 static uint32_t G_HeroSkillLevel(edict_t const *ent, uint32_t abilcode) {
-    uint32_t const base_code = G_AbilityCode(abilcode);
+    uint32_t base_code = 0;
     if (!ent || !abilcode) {
         return 0;
     }
+    if (!g_ability_cache) base_code = G_AbilityCode(abilcode);
     FOR_LOOP(i, MAX_HERO_ABILITIES) {
         heroability_t const *ha = ent->heroabilities + i;
-        if (ha->level && G_AbilityCode(ha->code) == base_code) {
+        if (!ha->level) continue;
+        if (g_ability_cache && !base_code) base_code = G_AbilityCode(abilcode);
+        if (G_AbilityCode(ha->code) == base_code) {
             return ha->level;
         }
     }

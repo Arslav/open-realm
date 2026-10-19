@@ -71,6 +71,61 @@ The WC3 model renderer applies gameplay fog after the shaded/unshaded material b
 Day/night sight-radius selection consumes the server-owned clock documented in [time-of-day.md](time-of-day.md); fog must not derive a
 second clock from `level.time`.
 
+## Exact CPU rasterization and blocker queries
+
+Normal circular reveals and script radius writes operate on clipped horizontal
+spans. Row bookkeeping happens once per span, and already filled visible/explored
+spans can return immediately. The three fog states, dirty-row transitions,
+inclusive circle edge, exploration retention and temporary nonzero visibility
+markers keep their previous semantics. The optional packed-mask experiment
+retains its own cell writer; this optimization does not enable that experiment.
+
+The first blocker-box query in each `G_FowUpdate` builds an integer summed-area
+table from the current blocker byte grid. Subsequent queries use four entries
+to answer the same inclusive/clipped rectangle question, then keep the existing
+disk or exact shadowcast/rim path. The table is invalidated on every update,
+including updates without a blocker rebuild, so a changed bitmap cannot reuse
+a stale answer. It is transient scratch, allocated lazily, grown to demand and
+released by `G_FowShutdown`; no network or save field changes. Allocation failure
+retains the exact byte scan and retries on the next update. Storage is
+`4 * (width+1) * (height+1)` bytes (about 258 KiB for a 256×256 fog grid).
+
+`wc3_game.fow_disk_spans_preserve_each_state_dirty_rows_and_idempotence` checks
+all cells/dirty rows for all three states, repeated writes and nonzero markers.
+Blocker query tests cover clipping, empty rectangles, bitmap changes, blocker
+removal, map reinitialization and allocation failure/recovery. The original
+work-bound regressions failed before the optimization. Both ROC/TFT focused
+suites pass; Honor FPS validation is still required after reconnecting the device.
+
+## Exact sight footprint cache
+
+`wc3_fow_cache 1` (Android default; other platforms default to `0`) reuses the exact shadowcast footprint for an identical source
+cell and integer sight radius. It caches the cells emitted by the existing
+recursive caster, then reapplies their horizontal spans through the ordinary
+visible/explored writer. It does not approximate occlusion or change fog-grid
+resolution, simulation cadence, day/night radii or visibility policy.
+
+The tree-rim pass deliberately remains outside the cache and runs for every
+source in the original order against the live viewer grid. Rim expansion can
+read visibility contributed by earlier sources, so caching a complete final
+per-unit reveal or combining independently expanded masks would change behavior.
+Far Sight and started script modifiers still run after ordinary sight.
+
+Storage is 512 direct-mapped entries with at most 63 uint64 rows (about 260 KiB),
+plus one byte per map fog cell for an exact blocker snapshot. Radii above 31 fog
+cells use the original caster. The full blocker bitmap is compared once per
+update; any byte change invalidates every footprint, including direct edits
+without an entity-blocker rebuild. Entries are also cleared at map shutdown and
+initialization. Allocation failure emits a diagnostic and keeps ordinary casts
+until the next map initialization. None of this scratch is serialized.
+
+`wc3_fow_stats 1` reports `[FOW_CACHE]` update/hit/miss/replacement/bypass totals once per
+simulation second. The recursive-work test exercises cache consumption through
+`globals.RunFrame`. Differential tests compare both byte planes, occupied rows
+and dirty rows for three viewers over changing obstacles, movement, sight
+radii, source death and all three script fog states. Separate tests cover
+switching off/on, map reset, large-radius bypass and allocation failure.
+
 ## Known Gaps
 
 This change intentionally does not alter unrelated compatibility areas that need broader evidence:

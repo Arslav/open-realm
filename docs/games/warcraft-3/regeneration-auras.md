@@ -48,6 +48,38 @@ Aura lookup covers the three ability ownership paths used by OpenRealm:
 The alias, rather than the normalized base code, remains authoritative for `Area`,
 `targs`, `DataA`, and `DataB`. This is required for custom-object-data aliases.
 
+### Provider Discovery Cost
+
+`regen_aura_cache_update` rebuilds the existing provider snapshot once per
+simulation frame / ability-data generation. It now requests all aura slots in one
+owned-ability walk per edict instead of calling the single-family resolver for
+each of 14 distinct base codes. Its 19 output slots include the regeneration
+families, Devotion/Unholy presentation references and duplicate combat-data slots.
+The walk parses the native list once, then examines runtime additions and ranked
+Hero slots. Each owned alias resolves its authored base at most once for all
+queries. A rawcode match and a different authored base match may both succeed.
+
+First match still wins in native-list order, then runtime-addition order, then
+Hero-slot order. Native/runtime membership honors the removal list; a learned
+Hero contributes its actual rank. The public single-family
+`S_ResolveAbilityAlias` uses the same walker with one query. Each output is cleared
+before reuse, so a later edict cannot inherit the previous source's aura slots.
+
+There is no new retained cache, entity field, network or save-format change.
+Provider rescan cadence, recipient refresh deadlines and active-state checks are
+unchanged. Inactive sources still participate in discovery so existing visibility
+transition invalidation remains intact. Map/save-load reset continues through
+`G_ResetHeroPassiveCaches`.
+
+`wc3_spell.combat_aura_alias_resolution_scales_with_edicts` asserts one walk per
+edict, shared across recipients/families, then another walk on the next frame.
+Its three work-count assertions fail with the old resolver. Two additional
+consumer-path tests cover native/added/Hero precedence, removal, rank changes,
+multiple aura families and rawcode/base dual matches, using RoC-style shared and
+TFT-style per-rank target columns. The focused group passes 155 assertions in
+three tests in each data mode. `S_TestHeroAuraAliasResolves` counts owned-list
+walks in test builds, including batched requests, rather than output-slot count.
+
 ## Target Filtering
 
 The local aura predicate consumes the authored `targs` list and supports the target

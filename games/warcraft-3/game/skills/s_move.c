@@ -40,7 +40,7 @@ typedef struct {
 #define MOVE_WORKER_CORRIDOR_RESET (30.0f * (float)M_PI / 180.0f)
 #define MOVE_WORKER_MAX_DEVIATION 5.0f                         /* collision radii */
 #define MOVE_WORKER_ESCAPE_DEVIATION 6.0f                      /* collision radii */
-#define MAX_MOVE_COLLIDERS     256
+#define MAX_MOVE_COLLIDERS 256 // entities; preserves the existing per-candidate collision query limit
 
 typedef enum {
     MOVE_AVOID_GENERIC,
@@ -52,6 +52,13 @@ typedef enum {
     MOVE_COLLIDE_UNITS,
     MOVE_IGNORE_UNITS,
 } moveCollisionPolicy_t;
+
+typedef struct {
+    edict_t *self;
+    box2_t bounds;
+    edict_t *list[MAX_MOVE_COLLIDERS + 1];
+    uint32_t count;
+} moveQueryScope_t;
 
 typedef enum {
     WC3_MOVE_GROUND,
@@ -71,6 +78,7 @@ static wc3MovementTypeMap_t const movement_types[] = {
 static edict_t *trymove_self = NULL;
 static edict_t *trymove_blocker = NULL;  /* unit that rejected the last candidate (NULL = clear or terrain) */
 static edict_t *trymove_colliders[MAX_MOVE_COLLIDERS];
+static moveQueryScope_t *trymove_scope;
 
 static void unit_apply_heading(edict_t *self, vec2_t const *dir, moveAvoidPolicy_t policy);
 static bool move_fallback_steer(edict_t *self, moveAvoidPolicy_t policy);
@@ -362,6 +370,36 @@ static bool filter_blockers(edict_t const *ent) {
     return M_UnitsShareCollisionDomain(ent, trymove_self);
 }
 
+/* Detect excess neighbours below the backend's output cap, without logging an optional scratch overflow. */
+static bool move_scope_blocker(edict_t const *ent) {
+    if (!filter_blockers(ent)) return false;
+    if (trymove_scope->count <= MAX_MOVE_COLLIDERS) trymove_scope->count++;
+    return trymove_scope->count <= MAX_MOVE_COLLIDERS;
+}
+
+/* Deflections share an immutable origin and step length. Keep the tree's order and each trial's exact box. */
+static uint32_t move_query_blockers(edict_t *self, box2_t const *box) {
+    moveQueryScope_t *scope = trymove_scope;
+    trymove_self = self;
+    if (!scope || scope->self != self)
+        return gi.BoxEdicts(box, trymove_colliders, MAX_MOVE_COLLIDERS, filter_blockers);
+    if (scope->count == UINT32_MAX) {
+        scope->count = 0;
+        gi.BoxEdicts(&scope->bounds, scope->list, MAX_MOVE_COLLIDERS + 1, move_scope_blocker);
+    }
+    /* A larger box may overflow even when a trial does not: retain the original query rather than truncate. */
+    if (scope->count > MAX_MOVE_COLLIDERS)
+        return gi.BoxEdicts(box, trymove_colliders, MAX_MOVE_COLLIDERS, filter_blockers);
+    uint32_t count = 0;
+    FOR_LOOP(i, scope->count) {
+        edict_t *ent = scope->list[i];
+        if (ent->bounds.min.x > box->max.x || ent->bounds.min.y > box->max.y ||
+            ent->bounds.max.x < box->min.x || ent->bounds.max.y < box->min.y) continue;
+        trymove_colliders[count++] = ent;
+    }
+    return count;
+}
+
 /* Distance from point p to the segment [a,b]. */
 static float point_segment_distance(vec2_t const *a, vec2_t const *b, vec2_t const *p) {
     vec2_t const ab = Vector2_sub(b, a);
@@ -493,8 +531,7 @@ static bool move_is_valid_policy(edict_t *self, vec2_t const *cand,
         { (ox < cand->x ? ox : cand->x) - reach, (oy < cand->y ? oy : cand->y) - reach },
         { (ox > cand->x ? ox : cand->x) + reach, (oy > cand->y ? oy : cand->y) + reach },
     };
-    trymove_self = self;
-    uint32_t const num = gi.BoxEdicts(&box, trymove_colliders, MAX_MOVE_COLLIDERS, filter_blockers);
+    uint32_t const num = move_query_blockers(self, &box);
     FOR_LOOP(i, num) {
         edict_t *const b = trymove_colliders[i];
         float const rr = self->collision + b->collision;
@@ -794,7 +831,16 @@ static float unit_desired_heading(edict_t *self, float goal_angle, float dist,
     }
     routeSlide_t slide = { .ent = self, .angle = goal_angle, .dist = dist, .rings = max_rings,
         .valid = collision_policy == MOVE_IGNORE_UNITS ? move_static_is_valid : move_is_valid };
-    return CM_SlideRoute(&slide);
+    float const reach = self->collision + 1.0f, step = fabsf(dist);
+    vec2_t const org = self->s.origin2;
+    moveQueryScope_t scope = {.self = self, .count = UINT32_MAX,
+        .bounds = {{(org.x - step) - reach, (org.y - step) - reach},
+                   {(org.x + step) + reach, (org.y + step) + reach}}};
+    moveQueryScope_t *previous = trymove_scope;
+    trymove_scope = &scope;
+    float const desired = CM_SlideRoute(&slide);
+    trymove_scope = previous;
+    return desired;
 }
 
 static void unit_apply_heading(edict_t *self, vec2_t const *dir, moveAvoidPolicy_t policy) {

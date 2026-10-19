@@ -1768,8 +1768,13 @@ TEST(wc3_spell, combat_aura_alias_resolution_scales_with_edicts) {
     S_TestResetHeroAuraAliasResolves();
     FOR_LOOP(i, AURA_TARGETS)
         T_FEQ(S_UnholyHealthRegen(targets[i]), 10.0f, 0.001f);
-    /* One shared provider pass should replace per-recipient scans and alias parsing. */
-    T_ASSERT(S_TestHeroAuraAliasResolves() <= globals.num_edicts * 16);
+    /* Each provider's owned abilities are walked once for all aura families, then shared by every recipient. */
+    T_EQ(S_TestHeroAuraAliasResolves(), globals.num_edicts);
+    T_FEQ(S_BrillianceManaRegen(targets[0]), 0.0f, 0.001f);
+    T_EQ(S_TestHeroAuraAliasResolves(), globals.num_edicts);
+    level.time += FRAMETIME; level.framenum++;
+    T_FEQ(S_UnholyHealthRegen(targets[0]), 10.0f, 0.001f);
+    T_EQ(S_TestHeroAuraAliasResolves(), globals.num_edicts * 2);
 
     FOR_LOOP(i, AURA_SOURCES) T_ASSERT(G_ActorRemoveSkill(sources[i], MAKEFOURCC('X','U','a','u')));
     level.time = AURA_UPDATE_MS; level.framenum++;
@@ -1777,6 +1782,102 @@ TEST(wc3_spell, combat_aura_alias_resolution_scales_with_edicts) {
     T_ASSERT(G_ActorAddSkill(sources[0], MAKEFOURCC('X','U','a','u')));
     level.time += AURA_UPDATE_MS; level.framenum++;
     T_FEQ(S_UnholyHealthRegen(targets[0]), 10.0f, 0.001f);
+
+    G_SetSLKRows("AbilityData", old);
+    free_slk_rows(rows);
+}
+
+TEST(wc3_spell, combat_aura_provider_preserves_ability_order_rank_and_removal) {
+    const char slk[] =
+        "ID;PWXL;N;EBB;Y8;X10\n"
+        "C;Y1;X1;K\"alias\"\nC;Y1;X2;K\"code\"\nC;Y1;X3;K\"targs\"\n"
+        "C;Y1;X4;K\"Area1\"\nC;Y1;X5;K\"DataA1\"\nC;Y1;X6;K\"DataB1\"\n"
+        "C;Y1;X7;K\"DataC1\"\nC;Y1;X8;K\"levels\"\nC;Y1;X9;K\"Area3\"\nC;Y1;X10;K\"DataA3\"\n"
+        "C;Y2;X1;K\"Xdv1\"\nC;Y2;X2;K\"AHad\"\nC;Y2;X3;K\"ground,friend\"\n"
+        "C;Y2;X4;K\"500\"\nC;Y2;X5;K\"3\"\nC;Y2;X8;K\"1\"\n"
+        "C;Y3;X1;K\"Xdv2\"\nC;Y3;X2;K\"AHad\"\nC;Y3;X3;K\"ground,friend\"\n"
+        "C;Y3;X4;K\"500\"\nC;Y3;X5;K\"7\"\nC;Y3;X8;K\"1\"\n"
+        "C;Y4;X1;K\"XdvR\"\nC;Y4;X2;K\"AHad\"\nC;Y4;X3;K\"ground,friend\"\n"
+        "C;Y4;X4;K\"500\"\nC;Y4;X5;K\"11\"\nC;Y4;X8;K\"1\"\n"
+        "C;Y5;X1;K\"XdvH\"\nC;Y5;X2;K\"AHad\"\nC;Y5;X3;K\"ground,friend\"\n"
+        "C;Y5;X4;K\"500\"\nC;Y5;X5;K\"13\"\nC;Y5;X8;K\"3\"\nC;Y5;X9;K\"500\"\nC;Y5;X10;K\"19\"\n"
+        "C;Y6;X1;K\"XUnh\"\nC;Y6;X2;K\"AUau\"\nC;Y6;X3;K\"ground,friend\"\n"
+        "C;Y6;X4;K\"500\"\nC;Y6;X5;K\"0.17\"\nC;Y6;X6;K\"0.23\"\nC;Y6;X8;K\"1\"\n"
+        "C;Y7;X1;K\"XBr1\"\nC;Y7;X2;K\"AHab\"\nC;Y7;X3;K\"ground,friend\"\n"
+        "C;Y7;X4;K\"500\"\nC;Y7;X5;K\"2.7\"\nC;Y7;X8;K\"1\"\n"
+        "C;Y8;X1;K\"ACnr\"\nC;Y8;X2;K\"Aoar\"\nC;Y8;X3;K\"ground,friend\"\n"
+        "C;Y8;X4;K\"500\"\nC;Y8;X5;K\"0.013\"\nC;Y8;X6;K\"1\"\nC;Y8;X8;K\"1\"\nE\n";
+    UnitAbilities_t abilities = { .abilList = "bad,Xdv1,Xdv2,XUnh" };
+    slkTestData_t *rows = parse_slk_string(slk), *old;
+    edict_t *source, *target;
+
+    reset_entities(); setup_test_world();
+    old = G_SetSLKRows("AbilityData", rows);
+    source = alloc_test_unit(MAKEFOURCC('H','p','a','l'), 0, 0);
+    target = alloc_test_unit(MAKEFOURCC('h','f','o','o'), 100, 0);
+    source->data.UnitAbilities = &abilities;
+    source->s.player = target->s.player = 0;
+    source->targtype = target->targtype = TARG_GROUND;
+    source->svflags |= SVF_MONSTER; target->svflags |= SVF_MONSTER;
+    source->heroabilities[0] = MAKE(heroability_t, .code = MAKEFOURCC('X','d','v','H'), .level = 3);
+    source->abilities.added[0] = MAKEFOURCC('X','d','v','R');
+    source->abilities.added[1] = MAKEFOURCC('X','B','r','1');
+    source->abilities.added[2] = MAKEFOURCC('A','C','n','r');
+    ARRAY_COUNT(source->abilities.added) = 3;
+    target->health.max_value = 1000.0f; target->health.value = 500.0f;
+    level.time = level.framenum = 0;
+
+    T_FEQ(S_DevotionArmorBonus(target), 3.0f, 0.001f);
+    T_FEQ(S_UnholyMoveBonus(target), 0.17f, 0.001f);
+    T_FEQ(S_UnholyHealthRegen(target), 0.23f, 0.001f);
+    T_FEQ(S_BrillianceManaRegen(target), 2.7f, 0.001f);
+    T_FEQ(S_RegenerationHealthAura(target), 13.0f, 0.001f);
+    T_ASSERT(G_ActorRemoveSkill(source, MAKEFOURCC('X','d','v','1')));
+    level.time += AURA_UPDATE_MS; level.framenum++;
+    T_FEQ(S_DevotionArmorBonus(target), 7.0f, 0.001f);
+    T_ASSERT(G_ActorRemoveSkill(source, MAKEFOURCC('X','d','v','2')));
+    level.time += AURA_UPDATE_MS; level.framenum++;
+    T_FEQ(S_DevotionArmorBonus(target), 11.0f, 0.001f);
+    T_ASSERT(G_ActorRemoveSkill(source, MAKEFOURCC('X','d','v','R')));
+    level.time += AURA_UPDATE_MS; level.framenum++;
+    T_FEQ(S_DevotionArmorBonus(target), 19.0f, 0.001f);
+    source->heroabilities[0].level = 1;
+    level.time += AURA_UPDATE_MS; level.framenum++;
+    T_FEQ(S_DevotionArmorBonus(target), 13.0f, 0.001f);
+    source->heroabilities[0].level = 0;
+    level.time += AURA_UPDATE_MS; level.framenum++;
+    T_FEQ(S_DevotionArmorBonus(target), 0.0f, 0.001f);
+    T_FEQ(S_UnholyHealthRegen(target), 0.23f, 0.001f);
+
+    G_SetSLKRows("AbilityData", old);
+    free_slk_rows(rows);
+}
+
+TEST(wc3_spell, combat_aura_provider_matches_both_rawcode_and_authored_base) {
+    const char slk[] =
+        "ID;PWXL;N;EBB;Y2;X6\n"
+        "C;Y1;X1;K\"alias\"\nC;Y1;X2;K\"code\"\nC;Y1;X3;K\"targs1\"\n"
+        "C;Y1;X4;K\"Area1\"\nC;Y1;X5;K\"DataA1\"\nC;Y1;X6;K\"levels\"\n"
+        "C;Y2;X1;K\"AHad\"\nC;Y2;X2;K\"AHab\"\nC;Y2;X3;K\"ground,friend\"\n"
+        "C;Y2;X4;K\"500\"\nC;Y2;X5;K\"4.5\"\nC;Y2;X6;K\"1\"\nE\n";
+    UnitAbilities_t abilities = { .abilList = "AHad" };
+    slkTestData_t *rows = parse_slk_string(slk), *old;
+    edict_t *source, *target;
+
+    reset_entities(); setup_test_world();
+    old = G_SetSLKRows("AbilityData", rows);
+    source = alloc_test_unit(MAKEFOURCC('H','p','a','l'), 0, 0);
+    target = alloc_test_unit(MAKEFOURCC('h','f','o','o'), 100, 0);
+    source->data.UnitAbilities = &abilities;
+    source->s.player = target->s.player = 0;
+    source->targtype = target->targtype = TARG_GROUND;
+    level.time = level.framenum = 0;
+    T_FEQ(S_DevotionArmorBonus(target), 4.5f, 0.001f);
+    T_FEQ(S_BrillianceManaRegen(target), 4.5f, 0.001f);
+    T_ASSERT(G_ActorRemoveSkill(source, MAKEFOURCC('A','H','a','d')));
+    level.time += AURA_UPDATE_MS; level.framenum++;
+    T_FEQ(S_DevotionArmorBonus(target), 0.0f, 0.001f);
+    T_FEQ(S_BrillianceManaRegen(target), 0.0f, 0.001f);
 
     G_SetSLKRows("AbilityData", old);
     free_slk_rows(rows);
@@ -3008,6 +3109,37 @@ TEST(wc3_spell, creep_disease_cloud_alias_ticks_authored_area_damage) {
     }
     level.time += 1000; unit_updatestatuses(target);
     T_FEQ(target->health.value, 87, 0.001f);
+    G_SetSLKRows("AbilityData", old); free_slk_rows(rows);
+}
+
+/* A remote army must not pay target-mask/visibility/status queries for every plague source. */
+TEST(wc3_spell, disease_cloud_rejects_far_units_before_target_rules) {
+    extern uint32_t S_TestDiseaseTargetChecks;
+    const char slk[] =
+        "ID;PWXL;N;EBB;Y2;X6\n"
+        "C;Y1;X1;K\"alias\"\nC;Y1;X2;K\"code\"\nC;Y1;X3;K\"Area1\"\n"
+        "C;Y1;X4;K\"DataA1\"\nC;Y1;X5;K\"targs\"\nC;Y1;X6;K\"DataB1\"\n"
+        "C;Y2;X1;K\"Aap1\"\nC;Y2;X2;K\"Aapl\"\nC;Y2;X3;K\"141\"\n"
+        "C;Y2;X4;K\"5\"\nC;Y2;X5;K\"ground,enemy,organic\"\nC;Y2;X6;K\"13\"\nE\n";
+    slkTestData_t *rows = parse_slk_string(slk), *old = G_SetSLKRows("AbilityData", rows);
+    edict_t *source = make_hero(MAKEFOURCC('o','g','r','u'), 100, 0, 0, 0);
+    edict_t *near = alloc_test_unit(MAKEFOURCC('h','f','o','o'), 141, 0);
+    UnitAbilities_t abilities = { .abilList = "Aap1" };
+    source->data.UnitAbilities = &abilities; source->s.player = 0;
+    near->s.player = PLAYER_NEUTRAL_AGGRESSIVE; near->svflags |= SVF_MONSTER; near->targtype = TARG_GROUND;
+    S_TestDiseaseTargetChecks = 0; S_RunAbilityUpdates(source);
+    uint32_t local = S_TestDiseaseTargetChecks;
+    T_ASSERT(local > 0); T_NOT_NULL(unit_findstatus(near, MAKEFOURCC('B','a','p','l')));
+    edict_t *far[128];
+    FOR_LOOP(i, 128) {
+        far[i] = alloc_test_unit(MAKEFOURCC('h','f','o','o'), 142 + i * 20, 0);
+        far[i]->s.player = PLAYER_NEUTRAL_AGGRESSIVE; far[i]->svflags |= SVF_MONSTER; far[i]->targtype = TARG_GROUND;
+    }
+    S_TestDiseaseTargetChecks = 0; S_RunAbilityUpdates(source);
+    T_EQ(S_TestDiseaseTargetChecks, local);
+    FOR_LOOP(i, 128) T_NULL(unit_findstatus(far[i], MAKEFOURCC('B','a','p','l')));
+    level.time += 1000; unit_updatestatuses(near);
+    T_FEQ(near->health.value, near->health.max_value - 13, 0.001f);
     G_SetSLKRows("AbilityData", old); free_slk_rows(rows);
 }
 

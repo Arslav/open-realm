@@ -3,6 +3,17 @@
 #define ID_DISEASE_CLOUD MAKEFOURCC('A','a','p','l')
 #define DISEASE_TICK_MS 1000 // milliseconds; DataB is damage per second; infection pulse interval
 
+#ifdef BZ_TESTS
+uint32_t S_TestDiseaseTargetChecks;
+#endif
+
+static bool disease_allows_target(uint32_t code, edict_t *source, edict_t *target) {
+#ifdef BZ_TESTS
+    S_TestDiseaseTargetChecks++;
+#endif
+    return S_SpellAllowsTarget(code, source, target);
+}
+
 /* A recipient carries the infection after leaving the aura; rank and pulse deadline survive save/load. */
 static void disease_tick(edict_t *target, heroabilitystatus_t *slot) {
     edict_t *source = S_SpellStatusSource(slot);
@@ -33,8 +44,9 @@ BZ_ABILITY_PROC(CAbilityDiseaseCloud) {
     if (row->area <= 0.0f || row->data[0].number <= 0.0f || row->data[1].number <= 0.0f) return true;
     /* ROC omits BuffID; the authored TFT infection token is Bapl (Bplg is cloud art). */
     buff = row->buffID && strlen(row->buffID) >= 4 ? row->buffID : "Bapl";
-    FILTER_EDICTS(target, target != ent && S_SpellAllowsTarget(ability.alias, ent, target) &&
-                  Vector2_distance(&ent->s.origin2, &target->s.origin2) <= row->area) {
+    FILTER_EDICTS(target, target != ent &&
+                  Vector2_distance(&ent->s.origin2, &target->s.origin2) <= row->area &&
+                  disease_allows_target(ability.alias, ent, target)) {
         /* Each infector owns its own infection: another source's Bapl must
          * neither suppress this application nor have its pulse phase reset. */
         heroabilitystatus_t *slot = unit_findstatussource(target, FS_SLKKey(buff), ent);

@@ -9,6 +9,103 @@ void setup_test_world(void);
 slkTestData_t *parse_slk_string(char const *slk_text);
 void free_slk_rows(slkTestData_t *rows);
 
+static bool query_cache_on;
+static cstring_t query_cache_cvar(cstring_t name, cstring_t fallback) {
+    return !strcmp(name, "wc3_ability_cache") ? (query_cache_on ? "1" : "0") : fallback;
+}
+
+/* A cold decode inside an owned-ability walk must not overwrite that caller's current token. */
+TEST(wc3_ability_dispatch, query_cache_keeps_outer_parser_token_on_cold_decode) {
+    cstring_t (*old)(cstring_t, cstring_t) = gi.CvarString;
+    UnitAbilities_t row = { .abilList = "A001,A002" };
+    reset_entities(); setup_test_world();
+    edict_t *unit = alloc_test_unit(MAKEFOURCC('h','f','o','o'), 0, 0);
+    unit->data.UnitAbilities = &row;
+    query_cache_on = true; gi.CvarString = query_cache_cvar; InitAbilities();
+    PARSE_LIST(row.abilList, token, parse_segment) {
+        uint32_t before = FS_SLKKey(token);
+        T_ASSERT(G_ActorHasSkill(unit, token));
+        T_EQ(FS_SLKKey(token), before);
+    }
+    gi.CvarString = old; InitAbilities();
+}
+
+/* Repeated membership must reuse a decode while live add/remove and row rebinding remain immediate. */
+TEST(wc3_ability_dispatch, query_cache_reuses_lists_and_tracks_runtime_membership) {
+    extern uint32_t G_TestAbilityListParses;
+    cstring_t (*old)(cstring_t, cstring_t) = gi.CvarString;
+    char text[] = "AInv,\"A001\",bad, A002";
+    UnitAbilities_t row = { .abilList = text }, other = { .abilList = "A003" };
+    reset_entities(); setup_test_world();
+    edict_t *unit = alloc_test_unit(MAKEFOURCC('h','f','o','o'), 0, 0);
+    unit->data.UnitAbilities = &row;
+    query_cache_on = true; gi.CvarString = query_cache_cvar; InitAbilities();
+    G_TestAbilityListParses = 0;
+    FOR_LOOP(i, 100) { T_ASSERT(G_ActorHasSkill(unit, "A001")); T_ASSERT(!G_ActorHasSkill(unit, "A003")); }
+    T_EQ(G_TestAbilityListParses, 1);
+    T_ASSERT(G_ActorRemoveSkill(unit, MAKEFOURCC('A','0','0','1')));
+    T_ASSERT(!G_ActorHasSkill(unit, "A001"));
+    T_ASSERT(G_ActorAddSkill(unit, MAKEFOURCC('A','0','0','1')));
+    T_ASSERT(G_ActorHasSkill(unit, "A001"));
+    unit->data.UnitAbilities = &other;
+    T_ASSERT(G_ActorHasSkill(unit, "A003")); T_ASSERT(!G_ActorHasSkill(unit, "A002"));
+    unit->data.UnitAbilities = &row;
+    memcpy(text, "A003", 4);
+    T_ASSERT(G_ActorHasSkill(unit, "A003")); T_ASSERT(!G_ActorHasSkill(unit, "AInv"));
+    query_cache_on = false; InitAbilities();
+    G_TestAbilityListParses = 0;
+    FOR_LOOP(i, 10) T_ASSERT(G_ActorHasSkill(unit, "A002"));
+    T_EQ(G_TestAbilityListParses, 10);
+    gi.CvarString = old; InitAbilities();
+}
+
+/* Rank queries on ordinary units must not resolve an alias before finding any ranked entry. */
+TEST(wc3_ability_dispatch, query_cache_skips_empty_ranks_and_invalidates_alias_rows) {
+    extern uint32_t G_TestAbilityCodeLookups;
+    cstring_t (*old)(cstring_t, cstring_t) = gi.CvarString;
+    UnitAbilities_t row = { .abilList = "AInv" };
+    reset_entities(); setup_test_world();
+    edict_t *unit = alloc_test_unit(MAKEFOURCC('h','f','o','o'), 0, 0);
+    unit->data.UnitAbilities = &row;
+    query_cache_on = true; gi.CvarString = query_cache_cvar; InitAbilities();
+    G_TestAbilityCodeLookups = 0;
+    FOR_LOOP(i, 100) T_EQ(G_UnitAbilityLevel(unit, MAKEFOURCC('A','I','n','v')), 1);
+    T_EQ(G_TestAbilityCodeLookups, 0);
+    uint32_t const id = MAKEFOURCC('A','0','0','1');
+    slkTestData_t *rows = parse_slk_string("ID;PWXL;N;EBB;Y2;X2\nC;Y1;X1;K\"alias\"\nC;Y1;X2;K\"code\"\nC;Y2;X1;K\"A001\"\nC;Y2;X2;K\"Ahea\"\nE\n");
+    slkTestData_t *saved = G_SetSLKRows("AbilityData", rows);
+    G_TestAbilityCodeLookups = 0;
+    FOR_LOOP(i, 100) T_EQ(G_AbilityCode(id), MAKEFOURCC('A','h','e','a'));
+    T_EQ(G_TestAbilityCodeLookups, 1);
+    G_SetSLKRows("AbilityData", saved); free_slk_rows(rows);
+    T_EQ(G_AbilityCode(id), G_AbilityData(id)->code ? G_AbilityData(id)->code : id);
+    gi.CvarString = old; InitAbilities();
+}
+
+/* Registry indexing must preserve first registration, full command names, and concrete alias procedures. */
+TEST(wc3_ability_dispatch, query_cache_registry_matches_original_and_handles_long_lists) {
+    cstring_t (*old)(cstring_t, cstring_t) = gi.CvarString;
+    query_cache_on = true; gi.CvarString = query_cache_cvar; InitAbilities();
+    FOR_LOOP(i, game.num_abilities) {
+        ability_t const *item = GetAbilityByIndex(i);
+        ability_t const *fast = FindAbilityByClassname(item->classname);
+        query_cache_on = false; S_UpdateAbilityQueries();
+        T_ASSERT(fast == FindAbilityByClassname(item->classname));
+        query_cache_on = true; S_UpdateAbilityQueries();
+    }
+    T_NULL(FindAbilityByClassname("zzzz"));
+    T_ASSERT(FindAbilityForCommand(STR_CmdMove) == FindAbilityByClassname(STR_CmdMove));
+    reset_entities(); setup_test_world();
+    char text[801];
+    FOR_LOOP(i, 160) memcpy(text + i * 5, "A001,", 5);
+    text[799] = 0;
+    UnitAbilities_t row = { .abilList = text };
+    edict_t *unit = alloc_test_unit(MAKEFOURCC('h','f','o','o'), 0, 0);
+    unit->data.UnitAbilities = &row;
+    T_ASSERT(G_ActorHasSkill(unit, "A001")); T_ASSERT(!G_ActorHasSkill(unit, "A002"));
+    gi.CvarString = old; InitAbilities();
+}
+
 /* An object-data Heal alias must retain its authored amount and cost under autocast. */
 TEST(wc3_ability_dispatch, autocast_keeps_authored_alias) {
     const char slk[] =

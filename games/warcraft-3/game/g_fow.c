@@ -1,4 +1,5 @@
 #include "g_local.h"
+#include <stdlib.h>
 
 #define FOW_INVALID_CELL 0xffffffffu
 #define FOW_PATHING_PIXEL_SIZE 32.0f
@@ -26,6 +27,31 @@ static uint32_t g_fow_blocker_hash;
 static uint32_t g_fow_blocker_count;
 static bool g_fow_blockers_valid;
 static bool g_fow_blockers_dirty = true;
+static bool g_visibility_fast;
+static uint32_t *g_fow_blocker_prefix;
+static size_t g_fow_prefix_capacity;
+static bool g_fow_prefix_attempted, g_fow_prefix_valid;
+#ifdef __ANDROID__
+#define BZ_FOW_CACHE_DEFAULT "1"
+#define BZ_VISIBILITY_FAST_DEFAULT "1"
+#else
+#define BZ_FOW_CACHE_DEFAULT "0"
+#define BZ_VISIBILITY_FAST_DEFAULT "0"
+#endif
+#define FOW_CACHE_SLOTS 512 // entries; bounded exact footprints for dense armies without per-entity state
+#define FOW_CACHE_RADIUS 31 // fog cells; a 63-cell diameter fits each cached row in one uint64_t
+typedef struct {
+    uint64_t rows[2 * FOW_CACHE_RADIUS + 1];
+    uint32_t x, y, radius;
+} fowSightCache_t;
+static fowSightCache_t g_fow_sight_cache[FOW_CACHE_SLOTS], *g_fow_capture;
+static uint8_t *g_fow_cached_blockers;
+static bool g_fow_cache_enabled, g_fow_cache_failed;
+static struct { uint32_t start, updates, hits, misses, replaced, bypasses; } g_fow_cache_stats;
+#ifdef BZ_TESTS
+uint32_t G_TestFowCellWrites, G_TestFowBlockerLookups, G_TestFowCastCalls, G_TestForcedVisibilityOwners;
+bool G_TestFowPrefixAllocationFails, G_TestFowCacheAllocationFails;
+#endif
 #ifdef WC3_FOW_PACKED_MASK
 static bool g_fow_fast;
 #endif
@@ -89,8 +115,23 @@ void G_RemoveUnitForcedVisibility(edict_t *unit, uint32_t viewer) {
 
 bool G_UnitIsForcedVisibleToPlayer(edict_t const *unit, uint32_t viewer) {
     if (!unit || viewer >= MAX_PLAYERS) return false;
-    FOR_LOOP(owner, MAX_PLAYERS)
+    if (g_visibility_fast) {
+        uint64_t any = 0;
+        size_t bytes = sizeof(unit->forced_visibility_count);
+        _Static_assert(sizeof(unit->forced_visibility_count) % sizeof(any) == 0, "Whole visibility words required");
+        FOR_LOOP(i, bytes / sizeof(any)) {
+            uint64_t word;
+            memcpy(&word, (uint8_t const *)unit->forced_visibility_count + i * sizeof(word), sizeof(word));
+            any |= word;
+        }
+        if (!any) return false;
+    }
+    FOR_LOOP(owner, MAX_PLAYERS) {
+#ifdef BZ_TESTS
+        G_TestForcedVisibilityOwners++;
+#endif
         if (unit->forced_visibility_count[owner] && G_FowPlayersShareVision(viewer, owner)) return true;
+    }
     return false;
 }
 
@@ -142,6 +183,9 @@ typedef struct {
 
 /* Scripted fog states own both planes, so the three JASS states need no parallel cinematic map. */
 static void G_FowSetCellState(fowPlayerGrid_t *grid, uint32_t index, uint32_t state) {
+#ifdef BZ_TESTS
+    G_TestFowCellWrites++;
+#endif
     uint32_t y, x;
     if (!grid || !grid->visible || !grid->explored || index >= G_FowCellCount()) return;
     y = index / level.fow.width;
@@ -191,6 +235,35 @@ static void G_FowSetBlocked(uint32_t x, uint32_t y) {
     }
 }
 
+/* Rebuild from the current bitmap once per update; optional scratch never owns fog state. */
+static void G_FowBuildBlockerPrefix(void) {
+    size_t stride = (size_t)level.fow.width + 1;
+    size_t rows = (size_t)level.fow.height + 1;
+    g_fow_prefix_attempted = true;
+    if (stride > SIZE_MAX / rows) return;
+    size_t count = stride * rows;
+    if (count > SIZE_MAX / sizeof(*g_fow_blocker_prefix)) return;
+    if (count > g_fow_prefix_capacity) {
+#ifdef BZ_TESTS
+        uint32_t *next = G_TestFowPrefixAllocationFails ? NULL : realloc(g_fow_blocker_prefix, count * sizeof(*next));
+#else
+        uint32_t *next = realloc(g_fow_blocker_prefix, count * sizeof(*next));
+#endif
+        if (!next) return; /* The exact bitmap scan remains available. */
+        g_fow_blocker_prefix = next; g_fow_prefix_capacity = count;
+    }
+    memset(g_fow_blocker_prefix, 0, stride * sizeof(*g_fow_blocker_prefix));
+    FOR_LOOP(y, level.fow.height) {
+        uint32_t sum = 0;
+        uint32_t *row = g_fow_blocker_prefix + (y + 1) * stride;
+        uint32_t const *above = row - stride;
+        uint8_t const *blocked = level.fow.blocked + y * level.fow.width;
+        row[0] = 0;
+        FOR_LOOP(x, level.fow.width) { sum += blocked[x] != 0; row[x + 1] = above[x + 1] + sum; }
+    }
+    g_fow_prefix_valid = true;
+}
+
 static void G_FowSetBlockedDilated(uint32_t x, uint32_t y, int dilation) {
     for (int dy = -dilation; dy <= dilation; dy++) {
         int by = (int)y + dy;
@@ -232,9 +305,23 @@ static bool G_FowAnyBlockedInBox(int minx, int miny, int maxx, int maxy) {
     miny = MAX(miny, 0);
     maxx = MIN(maxx, (int)level.fow.width - 1);
     maxy = MIN(maxy, (int)level.fow.height - 1);
+    if (minx > maxx || miny > maxy) return false;
+    if (!g_fow_prefix_attempted) G_FowBuildBlockerPrefix();
+    if (g_fow_prefix_valid) {
+        size_t stride = (size_t)level.fow.width + 1;
+        uint32_t const *top = g_fow_blocker_prefix + (size_t)miny * stride;
+        uint32_t const *bottom = g_fow_blocker_prefix + ((size_t)maxy + 1) * stride;
+#ifdef BZ_TESTS
+        G_TestFowBlockerLookups += 4;
+#endif
+        return bottom[maxx + 1] - bottom[minx] - top[maxx + 1] + top[minx] != 0;
+    }
     for (int y = miny; y <= maxy; y++) {
         uint8_t const *row = level.fow.blocked + y * level.fow.width;
         for (int x = minx; x <= maxx; x++) {
+#ifdef BZ_TESTS
+            G_TestFowBlockerLookups++;
+#endif
             if (row[x]) {
                 return true;
             }
@@ -243,8 +330,42 @@ static bool G_FowAnyBlockedInBox(int minx, int miny, int maxx, int maxy) {
     return false;
 }
 
+#ifdef BZ_TESTS
+bool G_TestFowBlockerBox(int minx, int miny, int maxx, int maxy) {
+    return G_FowAnyBlockedInBox(minx, miny, maxx, maxy);
+}
+#endif
+
 static int G_FowRadiusCells(float radius) {
     return MAX(1, (int)ceilf(radius / (float)FOW_CELL_SIZE));
+}
+
+/* Hoist row bookkeeping out of the cell loop; preserve nonzero temporary visibility markers. */
+static void G_FowSetSpanState(fowPlayerGrid_t *grid, uint32_t y, uint32_t first, uint32_t last, uint32_t state) {
+#ifdef WC3_FOW_PACKED_MASK
+    if (g_fow_fast) {
+        for (uint32_t x = first; x <= last; x++) G_FowSetCellState(grid, G_FowCellIndex(x, y), state);
+        return;
+    }
+#endif
+    uint8_t *visible = grid->visible + y * level.fow.width + first;
+    uint8_t *explored = grid->explored + y * level.fow.width + first;
+    uint32_t length = last - first + 1;
+    bool visible_changed = false, explored_changed = false;
+    if (state == WC3_FOG_STATE_VISIBLE && !memchr(visible, 0, length) && !memchr(explored, 0, length)) return;
+    FOR_LOOP(i, length) {
+        if (state == WC3_FOG_STATE_VISIBLE) {
+            if (!visible[i]) { visible[i] = 1; visible_changed = true; }
+        } else if (visible[i]) { visible[i] = 0; visible_changed = true; }
+        if (state == WC3_FOG_STATE_VISIBLE || state == WC3_FOG_STATE_FOGGED) {
+            if (!explored[i]) { explored[i] = 1; explored_changed = true; }
+        } else if (state == WC3_FOG_STATE_MASKED && explored[i]) { explored[i] = 0; explored_changed = true; }
+    }
+    if (visible_changed) {
+        if (state == WC3_FOG_STATE_VISIBLE) grid->visible_rows[y] = 1;
+        if (grid->dirty_visible_rows) grid->dirty_visible_rows[y] = 1;
+    }
+    if (explored_changed && grid->dirty_explored_rows) grid->dirty_explored_rows[y] = 1;
 }
 
 /* Circular trigger/modifier state writes reuse the ordinary fog-grid rasterization. */
@@ -258,13 +379,9 @@ static void G_FowSetDiskState(fowPlayerGrid_t *grid, fogDisk_t const *disk) {
             continue;
         }
         max_dx = (int)sqrtf((float)(radius_sq - dy * dy));
-        for (int dx = -max_dx; dx <= max_dx; dx++) {
-            int x = (int)disk->x + dx;
-            if (x < 0 || x >= (int)level.fow.width) {
-                continue;
-            }
-            G_FowSetCellState(grid, G_FowCellIndex((uint32_t)x, (uint32_t)y), disk->state);
-        }
+        int first = MAX(0, (int)disk->x - max_dx);
+        int last = MIN((int)level.fow.width - 1, (int)disk->x + max_dx);
+        if (first <= last) G_FowSetSpanState(grid, y, first, last, disk->state);
     }
 }
 static void G_FowRevealDisk(fowPlayerGrid_t *grid, uint32_t cx, uint32_t cy, int radius_cells) {
@@ -332,6 +449,43 @@ static bool G_FowPackedAt(uint16_t const *plane, fowPlayerGrid_t const *grid, ui
 }
 #endif
 
+/* Visibility depends on the actual blocker bytes, including edits that do not rebuild entity blockers. */
+static void G_FowPrepareSightCache(void) {
+    g_fow_cache_enabled = atoi(gi.CvarString("wc3_fow_cache", BZ_FOW_CACHE_DEFAULT)) != 0;
+    if (!g_fow_cache_enabled || g_fow_cache_failed) { g_fow_cache_enabled = false; return; }
+    uint32_t cells = G_FowCellCount();
+    if (!g_fow_cached_blockers) {
+#ifdef BZ_TESTS
+        g_fow_cached_blockers = G_TestFowCacheAllocationFails ? NULL : malloc(cells);
+#else
+        g_fow_cached_blockers = malloc(cells);
+#endif
+        if (!g_fow_cached_blockers) {
+            fprintf(stderr, "G_FowUpdate: unable to allocate %u-byte sight-cache blocker snapshot; using exact casts\n", cells);
+            g_fow_cache_failed = true; g_fow_cache_enabled = false; return;
+        }
+        memcpy(g_fow_cached_blockers, level.fow.blocked, cells);
+    } else if (memcmp(g_fow_cached_blockers, level.fow.blocked, cells)) {
+        memcpy(g_fow_cached_blockers, level.fow.blocked, cells);
+        memset(g_fow_sight_cache, 0, sizeof(g_fow_sight_cache));
+    }
+}
+
+/* Reapply only shadowcast cells; the order-dependent tree rim still runs against the live viewer grid. */
+static bool G_FowReplaySight(fowPlayerGrid_t *grid, fowSightCache_t const *cached) {
+    if (!cached->radius) return false;
+    FOR_LOOP(row, cached->radius * 2 + 1) {
+        uint64_t bits = cached->rows[row];
+        while (bits) {
+            uint32_t first = __builtin_ctzll(bits), count = __builtin_ctzll(~(bits >> first));
+            uint32_t x = cached->x + first - cached->radius, y = cached->y + row - cached->radius;
+            G_FowSetSpanState(grid, y, x, x + count - 1, WC3_FOG_STATE_VISIBLE);
+            bits &= ~((UINT64_MAX >> (64 - count)) << first);
+        }
+    }
+    return true;
+}
+
 static void G_FowCastLight(fowPlayerGrid_t *grid,
                            int cx,
                            int cy,
@@ -345,6 +499,9 @@ static void G_FowCastLight(fowPlayerGrid_t *grid,
                            int yy)
 {
     int radius_sq = radius * radius;
+#ifdef BZ_TESTS
+    G_TestFowCastCalls++;
+#endif
 
     if (start < end) {
         return;
@@ -377,6 +534,8 @@ static void G_FowCastLight(fowPlayerGrid_t *grid,
             if (in_bounds && delta_x * delta_x + delta_y * delta_y <= radius_sq)
             {
                 G_FOW_SET_VISIBLE_CELL(grid, x, y);
+                if (g_fow_capture)
+                    g_fow_capture->rows[y - cy + radius] |= UINT64_C(1) << (x - cx + radius);
             }
 
             if (blocked) {
@@ -420,6 +579,20 @@ static void G_FowRevealShadowcast(fowPlayerGrid_t *grid, uint32_t cx, uint32_t c
         { 1,  0,  0, -1 },
     };
 
+    fowSightCache_t *cached = NULL;
+    if (g_fow_cache_enabled && radius_cells <= FOW_CACHE_RADIUS) {
+        uint32_t hash = (cx * 73856093u ^ cy * 19349663u ^ (uint32_t)radius_cells * 83492791u);
+        cached = &g_fow_sight_cache[hash & (FOW_CACHE_SLOTS - 1)];
+        if (cached->x == cx && cached->y == cy && cached->radius == (uint32_t)radius_cells &&
+            G_FowReplaySight(grid, cached)) {
+            g_fow_cache_stats.hits++; return;
+        }
+        g_fow_cache_stats.replaced += cached->radius != 0;
+        *cached = (fowSightCache_t){.x = cx, .y = cy, .radius = (uint32_t)radius_cells};
+        cached->rows[radius_cells] = UINT64_C(1) << radius_cells;
+        g_fow_cache_stats.misses++;
+    } else g_fow_cache_stats.bypasses++;
+    g_fow_capture = cached;
     G_FowSetVisible(grid, cx, cy);
     FOR_LOOP(octant, 8) {
         G_FowCastLight(grid,
@@ -434,6 +607,7 @@ static void G_FowRevealShadowcast(fowPlayerGrid_t *grid, uint32_t cx, uint32_t c
                        mult[octant][2],
                        mult[octant][3]);
     }
+    g_fow_capture = NULL;
 }
 
 static bool G_FowHasVisibleNeighbor(fowPlayerGrid_t *grid, int x, int y, int margin) {
@@ -934,6 +1108,12 @@ static void G_FowApplyModifiers(uint32_t viewers) {
 }
 
 void G_FowShutdown(void) {
+    free(g_fow_cached_blockers); g_fow_cached_blockers = NULL;
+    memset(g_fow_sight_cache, 0, sizeof(g_fow_sight_cache));
+    g_fow_capture = NULL; g_fow_cache_enabled = g_fow_cache_failed = false;
+    memset(&g_fow_cache_stats, 0, sizeof(g_fow_cache_stats));
+    free(g_fow_blocker_prefix); g_fow_blocker_prefix = NULL; g_fow_prefix_capacity = 0;
+    g_fow_prefix_attempted = g_fow_prefix_valid = false;
     FOR_LOOP(player, MAX_PLAYERS) {
         fowPlayerGrid_t *grid = &level.fow.players[player];
         SAFE_DELETE(grid->visible, gi.MemFree);
@@ -1020,6 +1200,8 @@ void G_FowConnectPlayer(uint32_t player) {
 }
 
 void G_FowUpdate(void) {
+    g_visibility_fast = gi.CvarString && atoi(gi.CvarString("wc3_visibility_fast", BZ_VISIBILITY_FAST_DEFAULT));
+    g_fow_prefix_attempted = g_fow_prefix_valid = false;
     uint32_t owner_viewers[MAX_PLAYERS] = { 0 };
     uint32_t viewers = 0;
 
@@ -1043,6 +1225,7 @@ void G_FowUpdate(void) {
     if (G_FowBlockersChanged()) {
         G_FowRebuildBlockers();
     }
+    G_FowPrepareSightCache();
     FOR_LOOP(player, MAX_PLAYERS) {
         fowPlayerGrid_t *grid = &level.fow.players[player];
         if (!(viewers & (1u << player))) {
@@ -1087,6 +1270,13 @@ void G_FowUpdate(void) {
                               &level.fow.bounds);
     }
     G_FowApplyModifiers(viewers);
+    if (atoi(gi.CvarString("wc3_fow_stats", "0"))) {
+        g_fow_cache_stats.updates++;
+        if (level.time - g_fow_cache_stats.start >= 1000) {
+            fprintf(stderr, "[FOW_CACHE] updates=%u hits=%u misses=%u replaced=%u bypasses=%u\n", g_fow_cache_stats.updates, g_fow_cache_stats.hits, g_fow_cache_stats.misses, g_fow_cache_stats.replaced, g_fow_cache_stats.bypasses);
+            memset(&g_fow_cache_stats, 0, sizeof(g_fow_cache_stats)); g_fow_cache_stats.start = level.time;
+        }
+    }
 }
 
 /* FogEnable(false) reveals the whole map for this player, ordinary units

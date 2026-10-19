@@ -424,6 +424,7 @@ int S_SearingArrowDamage(edict_t *attacker, int damage);
 float S_ThornsDamageReturn(edict_t const *target, edict_t const *attacker, float damage);
 typedef struct { uint32_t alias; uint32_t level; } abilityAliasRef_t;
 abilityAliasRef_t S_ResolveAbilityAlias(edict_t *ent, uint32_t base_code);
+uint32_t const *S_UnitAbilityCodes(UnitAbilities_t const *row, uint32_t *count);
 bool S_EvasionRoll(edict_t *target);
 int S_CriticalStrikeDamage(edict_t *attacker, int damage);
 float S_SpikedArmorBonus(edict_t const *unit);

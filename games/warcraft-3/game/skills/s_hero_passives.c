@@ -32,11 +32,17 @@ typedef struct {
 } auraAbilityRef_t;
 
 typedef struct {
+    uint32_t code;
+    auraAbilityRef_t *out;
+} abilityAliasQuery_t;
+
+typedef struct {
     uint32_t code, data;
     bool enemy;
 } aura_cache_key_t;
 
 enum { HERO_AURA_CACHE_KEYS = 14 };
+enum { AURA_SOURCE_FIELDS = 5, AURA_SOURCE_QUERIES = AURA_SOURCE_FIELDS + HERO_AURA_CACHE_KEYS };
 
 static aura_cache_key_t const aura_cache_keys[HERO_AURA_CACHE_KEYS] = {
     { ID_BRILLIANCE, 1 },
@@ -100,6 +106,7 @@ static uint32_t aura_cache_next_update[MAX_ENTITIES];
 static uint32_t aura_cache_generation[MAX_ENTITIES];
 static uint32_t aura_cache_last_time = UINT_MAX;
 #ifdef BZ_TESTS
+/* Count owned-ability walks; one batched provider request is one walk, regardless of family count. */
 static uint32_t test_hero_aura_alias_resolves;
 void S_TestResetHeroAuraAliasResolves(void) { test_hero_aura_alias_resolves = 0; }
 uint32_t S_TestHeroAuraAliasResolves(void) { return test_hero_aura_alias_resolves; }
@@ -121,52 +128,79 @@ static void aura_cache_update_time(void) {
     aura_cache_last_time = level.time;
 }
 
-/* Shared owned-alias resolver: actual rawcode plus actual rank for base_code,
- * across native abilList, runtime-added abilities (honoring removals) and
- * ranked hero slots, via the authored code mapping. */
-abilityAliasRef_t S_ResolveAbilityAlias(edict_t *ent, uint32_t base_code) {
-    abilityAliasRef_t result = {0};
+/* One owned alias can satisfy both its rawcode and its authored base; earlier owners keep precedence. */
+static uint32_t ability_alias_match(abilityAliasQuery_t *queries, uint32_t count, auraAbilityRef_t owned) {
+    uint32_t matched = 0, base = 0;
+    bool mapped = false;
+    FOR_LOOP(i, count) {
+        abilityAliasQuery_t const *query = queries + i;
+        if (query->out->alias) continue;
+        if (owned.alias != query->code) {
+            if (!mapped) { base = G_AbilityCode(owned.alias); mapped = true; }
+            if (base != query->code) continue;
+        }
+        *query->out = owned;
+        matched++;
+    }
+    return matched;
+}
+
+/* Resolve all requested families in one native/added/hero walk instead of reparsing each list per family. */
+static void resolve_ability_aliases(edict_t *ent, abilityAliasQuery_t *queries, uint32_t count) {
+    uint32_t pending = count;
     char alias_name[5] = {0};
-    if (!ent || !base_code) return result;
-    if (ent->data.UnitAbilities && ent->data.UnitAbilities->abilList) {
+#ifdef BZ_TESTS
+    test_hero_aura_alias_resolves++;
+#endif
+    FOR_LOOP(i, count) *queries[i].out = (auraAbilityRef_t){0};
+    if (g_ability_cache) {
+        uint32_t num;
+        uint32_t const *codes = S_UnitAbilityCodes(ent->data.UnitAbilities, &num);
+        FOR_LOOP(i, num) {
+            uint32_t alias = codes[i];
+            memcpy(alias_name, &alias, 4);
+            if (!G_ActorHasSkill(ent, alias_name)) continue;
+            pending -= ability_alias_match(queries, count, (auraAbilityRef_t){ alias, 1 });
+            if (!pending) return;
+        }
+    } else if (ent->data.UnitAbilities && ent->data.UnitAbilities->abilList) {
         PARSE_LIST(ent->data.UnitAbilities->abilList, token, parse_segment) {
             uint32_t alias = 0;
             if (strlen(token) != 4 || !G_ActorHasSkill(ent, token)) continue;
             memcpy(&alias, token, sizeof(alias));
-            if (alias == base_code || G_AbilityCode(alias) == base_code) {
-                result.alias = alias;
-                result.level = 1;
-                return result;
-            }
+            pending -= ability_alias_match(queries, count, (auraAbilityRef_t){ alias, 1 });
+            if (!pending) return;
         }
     }
     FOR_LOOP(i, ARRAY_COUNT(ent->abilities.added)) {
         uint32_t const alias = ent->abilities.added[i];
         if (!alias) continue;
         memcpy(alias_name, &alias, 4);
-        if (G_ActorHasSkill(ent, alias_name) && (alias == base_code || G_AbilityCode(alias) == base_code)) {
-            result.alias = alias;
-            result.level = 1;
-            return result;
+        if (G_ActorHasSkill(ent, alias_name)) {
+            pending -= ability_alias_match(queries, count, (auraAbilityRef_t){ alias, 1 });
+            if (!pending) return;
         }
     }
     FOR_LOOP(i, MAX_HERO_ABILITIES) {
         heroability_t const *hero = ent->heroabilities + i;
-        if (hero->level && (hero->code == base_code || G_AbilityCode(hero->code) == base_code)) {
-            result.alias = hero->code;
-            result.level = hero->level;
-            return result;
+        if (hero->level) {
+            pending -= ability_alias_match(queries, count, (auraAbilityRef_t){ hero->code, hero->level });
+            if (!pending) return;
         }
     }
-    return result;
+}
+
+/* Single-family consumers share exactly the same membership, alias and rank rules as provider discovery. */
+abilityAliasRef_t S_ResolveAbilityAlias(edict_t *ent, uint32_t base_code) {
+    auraAbilityRef_t result = {0};
+    abilityAliasQuery_t query = { .code = base_code, .out = &result };
+    if (ent && base_code) resolve_ability_aliases(ent, &query, 1);
+    return (abilityAliasRef_t){ result.alias, result.level };
 }
 
 static auraAbilityRef_t actor_aura_ability(edict_t *ent, uint32_t base_code) {
-#ifdef BZ_TESTS
-    test_hero_aura_alias_resolves++;
-#endif
     abilityAliasRef_t resolved = S_ResolveAbilityAlias(ent, base_code);
-    auraAbilityRef_t result = { resolved.alias, resolved.level };
+    auraAbilityRef_t result = { .alias = resolved.alias, .level = resolved.level };
     return result;
 }
 
@@ -367,31 +401,23 @@ static void regen_aura_cache_update(void) {
     regen_source_count = 0;
     FOR_LOOP(i, globals.num_edicts) {
         regenAuraSource_t *entry = regen_sources + regen_source_count;
+        abilityAliasQuery_t queries[AURA_SOURCE_QUERIES] = {
+            { ID_REGEN_LIFE_ORC, &entry->life_orc },
+            { ID_REGEN_LIFE_BLIGHT, &entry->life_blight },
+            { ID_REGEN_MANA, &entry->mana },
+            { ID_DEVOTION_AURA, &entry->devotion },
+            { ID_UNHOLY_AURA, &entry->unholy }
+        };
         bool has_combat_aura = false;
 
         entry->source = g_edicts + i;
-        entry->life_orc = actor_aura_ability(entry->source, ID_REGEN_LIFE_ORC);
-        entry->life_blight = actor_aura_ability(entry->source, ID_REGEN_LIFE_BLIGHT);
-        entry->mana = actor_aura_ability(entry->source, ID_REGEN_MANA);
         entry->active = S_AuraUnitActive(entry->source);
-        entry->devotion = actor_aura_ability(entry->source, ID_DEVOTION_AURA);
-        entry->unholy = actor_aura_ability(entry->source, ID_UNHOLY_AURA);
-        FOR_LOOP(j, sizeof(aura_cache_keys) / sizeof(*aura_cache_keys)) {
-            uint32_t k;
-            if (aura_cache_keys[j].code == ID_DEVOTION_AURA)
-                entry->combat[j] = entry->devotion;
-            else if (aura_cache_keys[j].code == ID_UNHOLY_AURA)
-                entry->combat[j] = entry->unholy;
-            else {
-                for (k = 0; k < j; k++)
-                    if (aura_cache_keys[k].code == aura_cache_keys[j].code) break;
-                if (k < j)
-                    entry->combat[j] = entry->combat[k];
-                else
-                    entry->combat[j] = actor_aura_ability(entry->source, aura_cache_keys[j].code);
-            }
+        FOR_LOOP(j, HERO_AURA_CACHE_KEYS)
+            queries[AURA_SOURCE_FIELDS + j] = (abilityAliasQuery_t){
+                .code = aura_cache_keys[j].code, .out = &entry->combat[j] };
+        resolve_ability_aliases(entry->source, queries, AURA_SOURCE_QUERIES);
+        FOR_LOOP(j, HERO_AURA_CACHE_KEYS)
             if (entry->combat[j].alias) has_combat_aura = true;
-        }
         if (entry->life_orc.alias || entry->life_blight.alias || entry->mana.alias ||
             entry->devotion.alias || entry->unholy.alias || has_combat_aura) regen_source_count++;
     }

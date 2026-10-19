@@ -392,14 +392,27 @@ static void skill_remove(uint32_t *skills, uint32_t *count, uint32_t index) {
     memmove(skills + index, skills + index + 1, (--*count - index) * sizeof(*skills));
 }
 
+#ifdef BZ_TESTS
+uint32_t G_TestAbilityListParses;
+#endif
+
 static bool actor_has_skill(edict_t const *ent, uint32_t code) {
     cstring_t abilities;
     if (!ent || !code) return false;
     if (skill_index(ent->abilities.removed, ARRAY_COUNT(ent->abilities.removed), code) >= 0) return false;
     if (skill_index(ent->abilities.added, ARRAY_COUNT(ent->abilities.added), code) >= 0) return true;
     if (!ent->data.UnitAbilities) return false;
+    if (g_ability_cache) {
+        uint32_t count;
+        uint32_t const *codes = S_UnitAbilityCodes(ent->data.UnitAbilities, &count);
+        FOR_LOOP(i, count) if (codes[i] == code) return true;
+        return false;
+    }
     abilities = ent->data.UnitAbilities->abilList;
     if (abilities) {
+#ifdef BZ_TESTS
+        G_TestAbilityListParses++;
+#endif
         PARSE_LIST(abilities, abil, parse_segment) {
             uint32_t static_code = 0;
             if (strlen(abil) == 4) memcpy(&static_code, abil, sizeof(static_code));
