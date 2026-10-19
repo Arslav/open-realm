@@ -45,6 +45,31 @@ Cutscenes in Warcraft III are driven entirely by the map's JASS script (`war3map
 
 Pre-rendered campaign movies are a separate client media path driven by `PlayCinematic`; see [Pre-rendered Movies](pre-rendered-movies.md). They do not use the in-engine cinematic HUD/camera pipeline described below.
 
+### Touch-accessible skip button
+
+`hud/hud_cinematic.c` adds the native `CinematicSkipButton` to `CinematicPanel`, outside the optional
+`CinematicScenePanel`. It remains visible in silent interludes with no portrait/dialogue, below the top
+letterbox border at the right edge; subtitles keep their authored layout. Its art, pressed/hover states,
+font and height come from the archive's `EscMenuButtonTemplate` / `EscMenuButtonTextTemplate`. Only the
+new runtime control's width/anchor are authored in C. Retail has no skip-label string, so the control
+uses the requested `Пропустить` text. No project-owned production FDF is introduced.
+The runtime label explicitly fills the button's width/height: an auto-height `FT_TEXT` with all-points
+anchors retains its bottom anchor and collapses to the font line box, putting the caption at the lower
+edge. The serialized label-height assertion covers this alignment regression.
+Set this size after `UI_SetAllPoints`, which clears dimensions when it installs opposing anchors.
+
+The server serializes the button in `LAYER_CINEMATIC` only for `CLIENT_UI_CINEMATIC`; ordinary gameplay
+transmissions do not expose it. Its `cinematic_skip` command publishes `EVENT_PLAYER_END_CINEMATIC`
+through the same human-player dispatch as Escape. Map triggers retain ownership of cleanup, camera,
+control and mission transitions. A command received after cinematic mode has ended is ignored.
+This button covers map-scripted campaign scenes/interludes, not `PlayCinematic` movie playback.
+
+`wc3_cinematic_ui.*` checks real FDF styling/serialization, silent-scene visibility, return to gameplay,
+map-authored cleanup for a nonzero player slot, and late-click rejection. The fixture archive contains
+stock CinematicPanel/Esc-menu templates at their original archive paths; the expansion does not override
+these two files. `client_touch.authored_button_accepts_touch_while_world_controls_are_locked` checks
+SDL touch down/up across separate input pumps while world controls are blocked.
+
 ### Cinematic portrait and filter transport
 
 The cinematic dialogue path sends the portrait model through the existing

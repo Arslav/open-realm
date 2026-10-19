@@ -14,9 +14,40 @@
 #define WC3_MESSAGE_CHARS_PER_SECOND 6.0f
 #define WC3_MESSAGE_BASE_DURATION 5.0f
 
+/* Retail has no skip control: reuse Esc-menu templates for this native touch action,
+ * outside the portrait/subtitle panel so silent interludes can be skipped too. */
+static void UI_LoadCinematicSkip(void) {
+    frameDef_t *style = UI_FindFrame("EscMenuButtonTemplate");
+    frameDef_t *text_style = UI_FindFrame("EscMenuButtonTextTemplate");
+    frameDef_t *button, *text;
+    if (!style || !text_style) {
+        fprintf(stderr, "WC3 cinematic: missing Esc-menu skip button templates\n");
+        return;
+    }
+    button = UI_CloneFrameTree(style, hud.cinematic.CinematicPanel);
+    text = button ? UI_CloneFrameTree(text_style, button) : NULL;
+    if (!button || !text) {
+        fprintf(stderr, "WC3 cinematic: cannot allocate skip button\n");
+        if (button) UI_FreeFrameTree(button);
+        return;
+    }
+    snprintf(button->Name, sizeof(button->Name), "CinematicSkipButton");
+    snprintf(text->Name, sizeof(text->Name), "CinematicSkipButtonText");
+    UI_SetSize(button, 0.14f, style->Height);
+    UI_SetPoint(button, FRAMEPOINT_TOPRIGHT, hud.cinematic.CinematicTopBorder, FRAMEPOINT_BOTTOMRIGHT, -0.012f, -0.008f);
+    UI_SetOnClick(button, "cinematic_skip");
+    /* An auto-height text frame keeps its bottom anchor and drops below the button's center. */
+    UI_SetAllPoints(text);
+    UI_SetSize(text, button->Width, button->Height);
+    /* The retail string table has no skip label; this native action uses the requested wording. */
+    UI_SetText(text, BZ_WC3_CINEMATIC_SKIP_TEXT);
+    hud.cinematic_skip = button;
+}
+
 void UI_LoadHudCinematic(void) {
     if (hud.cinematic.CinematicPanel) return;
-    CinematicPanel_Load(&hud.cinematic);
+    if (!CinematicPanel_Load(&hud.cinematic)) return;
+    UI_LoadCinematicSkip();
     /* Cinematic letterbox chrome is presentation, not 4:3 gameplay HUD content.
      * Keep portrait/text authored in the centered safe area, but let the top
      * and bottom backdrops reach the physical widescreen edges. */
@@ -281,6 +312,7 @@ void UI_WriteCinematicLayer(edict_t *ent) {
     bool has_dialogue = ps->texts[PLAYERTEXT_DIALOGUE] && ps->texts[PLAYERTEXT_DIALOGUE][0];
     bool has_scene = has_portrait || has_speaker || has_dialogue;
 
+    UI_SetHidden(hud.cinematic_skip, ps->client_ui_state != CLIENT_UI_CINEMATIC);
     /* Hide the whole scene panel only when there's nothing to show. */
     UI_SetHidden(hud.cinematic.CinematicScenePanel, !has_scene);
     /* Hide portrait sub-frames individually when there's no portrait. */

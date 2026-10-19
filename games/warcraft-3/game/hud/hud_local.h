@@ -115,6 +115,7 @@ typedef struct {
     frameDef_t *game_result_reduce_text;
     float game_result_original_height;
     CinematicPanel_t cinematic;
+    frameDef_t *cinematic_skip;
     TimerDialog_t timer_dialog;
     LeaderBoard_t leaderboard;
     FRAMEDEF leaderboard_anchor;

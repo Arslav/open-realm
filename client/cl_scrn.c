@@ -178,7 +178,7 @@ void SCR_SetupViewBlend(viewDef_t *view, player_t const *ps, texture_t const *co
 void SCR_DrawScreenField(uint32_t msec) {
     re.BeginFrame();
     if (CL_MovieActive()) {
-        SCR_UpdateSystemCursor(true);
+        SCR_UpdateSystemCursor(!CL_MovieControlsVisible());
         CL_MovieDraw();
 #ifndef BZ_TESTS
         if (CL_ScreenshotReady()) re.Screenshot();

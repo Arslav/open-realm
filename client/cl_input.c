@@ -2344,6 +2344,101 @@ static void CL_TestTouchEdgeHud(void) {
 }
 TEST(client_touch, dragging_hud_button_never_captures_camera) { CL_TestTouchSequence(CL_TestTouchEdgeHud); }
 
+/* Authored UI remains clickable when world controls are locked, including a held touch across pumps. */
+static void CL_TestTouchLockedWorldButton(void) {
+    uint8_t packet[512];
+    sizeBuf_t msg;
+    uiFrame_t empty = { 0 }, frame = { .number = 1, .flags.type = FT_GLUETEXTBUTTON,
+        .size = { UI_BASE_WIDTH, UI_BASE_HEIGHT }, .onclick = "testaction" };
+    cl.playerstate.client_ui_state = CLIENT_UI_CINEMATIC;
+    cl.playerstate.uiflags = ~(1u << LAYER_CINEMATIC);
+    SZ_Init(&msg, packet, sizeof(packet)); MSG_WriteByte(&msg, LAYER_CINEMATIC);
+    MSG_WriteDeltaUIFrame(&msg, &empty, &frame, true); MSG_WriteByte(&msg, 0);
+    MSG_WriteLong(&msg, 0); MSG_WriteShort(&msg, 0); CL_ParseLayout(&msg);
+    T_ASSERT(!CL_GameplayInputReady());
+    CL_TestTouchMouse(SDL_MOUSEBUTTONDOWN, 400, 300);
+    CL_InputFrame();
+    T_EQ(cls.netchan.message.cursize, 0);
+    CL_TestTouchMouse(SDL_MOUSEBUTTONUP, 400, 300);
+    char command[128];
+    T_EQ(MSG_ReadByte(&cls.netchan.message), clc_stringcmd);
+    MSG_ReadString(&cls.netchan.message, command);
+    T_STREQ(command, "testaction");
+    T_EQ(cls.netchan.message.readcount, cls.netchan.message.cursize);
+    MemFree(cl.layout[LAYER_CINEMATIC]);
+    SCR_ClearLayoutLayer(LAYER_CINEMATIC);
+    cl.layout[LAYER_CINEMATIC] = NULL;
+}
+TEST(client_touch, authored_button_accepts_touch_while_world_controls_are_locked) {
+    CL_TestTouchSequence(CL_TestTouchLockedWorldButton);
+}
+
+#ifdef BZ_FFMPEG
+static rect_t test_movie_button;
+static uint32_t test_movie_draws;
+static bool test_movie_pressed;
+static void CL_TestTouchMovieFrame(drawCinematicFrame_t const *frame) { (void)frame; }
+static rect_t CL_TestTouchMovieScene(void) { return (rect_t){ 0, 0, 0.8f, 0.6f }; }
+static void CL_TestTouchMovieFill(rect_t const *rect, color32_t color) { (void)rect; (void)color; }
+static void CL_TestTouchMovieControl(rect_t const *rect, bool pressed) {
+    test_movie_button = *rect; test_movie_pressed = pressed; test_movie_draws++;
+}
+static void CL_TestTouchMovieSkip(void) {
+    re.DrawCinematicFrame = CL_TestTouchMovieFrame;
+    re.DrawFill = CL_TestTouchMovieFill; re.DrawMediaControl = CL_TestTouchMovieControl;
+    re.GetUISceneRect = CL_TestTouchMovieScene;
+    test_movie_draws = 0;
+    T_ASSERT(CL_PlayMovie("Movies\\TutorialIn.mpq"));
+    CL_MovieDraw();
+    T_EQ(test_movie_draws, 0); T_ASSERT(!CL_MovieControlsVisible());
+    CL_TestTouchMouse(SDL_MOUSEBUTTONDOWN, 400, 300);
+    CL_TestTouchMouse(SDL_MOUSEBUTTONUP, 400, 300);
+    T_ASSERT(CL_MovieActive());
+    T_ASSERT(CL_MovieControlsVisible());
+    CL_MovieDraw(); T_EQ(test_movie_draws, 1); T_ASSERT(!test_movie_pressed);
+    size2_t window = re.GetWindowSize();
+    int x = (int)((test_movie_button.x + test_movie_button.w * 0.5f) / 0.8f * window.width);
+    int y = (int)((test_movie_button.y + test_movie_button.h * 0.5f) / 0.6f * window.height);
+    /* Another background tap, a drag out, and a release without a matching press cannot skip. */
+    CL_TestTouchMouse(SDL_MOUSEBUTTONDOWN, 400, 300);
+    CL_TestTouchMouse(SDL_MOUSEBUTTONUP, 400, 300); T_ASSERT(CL_MovieActive());
+    CL_TestTouchMouse(SDL_MOUSEBUTTONDOWN, x, y);
+    CL_MovieDraw(); T_ASSERT(test_movie_pressed);
+    CL_TestTouchMouse(SDL_MOUSEMOTION, 400, 300);
+    CL_TestTouchMouse(SDL_MOUSEBUTTONUP, x, y); T_ASSERT(CL_MovieActive());
+    CL_TestTouchMouse(SDL_MOUSEBUTTONUP, x, y); T_ASSERT(CL_MovieActive());
+    CL_TestTouchMouse(SDL_MOUSEBUTTONDOWN, 400, 300);
+    CL_TestTouchMouse(SDL_MOUSEBUTTONUP, x, y); T_ASSERT(CL_MovieActive());
+    T_EQ(cls.netchan.message.cursize, 0);
+    CL_TestTouchMouse(SDL_MOUSEBUTTONDOWN, x, y);
+    SDL_Event focus = { .window = { .type = SDL_WINDOWEVENT, .event = SDL_WINDOWEVENT_FOCUS_LOST } };
+    T_EQ(SDL_PushEvent(&focus), 1); CL_Input();
+    focus.window.event = SDL_WINDOWEVENT_FOCUS_GAINED;
+    T_EQ(SDL_PushEvent(&focus), 1); CL_Input();
+    CL_TestTouchMouse(SDL_MOUSEBUTTONUP, x, y); T_ASSERT(CL_MovieActive());
+    /* Focus loss releases the shared queue modifier; no hidden UI/order command is allowed. */
+    char command[128];
+    T_EQ(MSG_ReadByte(&cls.netchan.message), clc_stringcmd);
+    MSG_ReadString(&cls.netchan.message, command); T_STREQ(command, CL_GameOrderQueueReleaseCommand());
+    T_EQ(cls.netchan.message.readcount, cls.netchan.message.cursize);
+    SZ_Clear(&cls.netchan.message); cls.netchan.message.readcount = 0;
+    CL_TestTouchMouse(SDL_MOUSEBUTTONDOWN, x, y);
+    CL_TestTouchMouse(SDL_MOUSEBUTTONUP, x, y);
+    T_ASSERT(!CL_MovieActive()); T_ASSERT(!CL_MovieControlsVisible());
+    T_EQ(cls.netchan.message.cursize, 0);
+    /* Each new movie starts with hidden controls, even after a successful button activation. */
+    T_ASSERT(CL_PlayMovie("Movies\\TutorialIn.mpq")); T_ASSERT(!CL_MovieControlsVisible());
+    CL_TestTouchMouse(SDL_MOUSEBUTTONDOWN, x, y);
+    CL_TestTouchMouse(SDL_MOUSEBUTTONUP, x, y);
+    T_ASSERT(CL_MovieActive()); T_ASSERT(CL_MovieControlsVisible());
+    CL_MovieCancel();
+    T_ASSERT(!CL_MovieControlsVisible());
+}
+TEST(client_touch, movie_first_tap_reveals_controls_without_skipping_or_clicking_hidden_ui) {
+    CL_TestTouchSequence(CL_TestTouchMovieSkip);
+}
+#endif
+
 static void CL_TestTouchHoldSequence(void) {
     CL_TestTouchMouse(SDL_MOUSEBUTTONDOWN, 400, 300);
     touch_press.time -= 600;

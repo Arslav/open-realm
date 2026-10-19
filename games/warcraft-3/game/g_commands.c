@@ -2165,6 +2165,13 @@ CLIENTCOMMAND(Cancel) {
     G_PublishEndCinematicForHumans(clent, true);
 }
 
+/* A touch release can arrive after the scene ends. Only an active cinematic may
+ * publish the same map-owned cleanup event as Escape. */
+CLIENTCOMMAND(CinematicSkip) {
+    if (!clent || !clent->client || clent->client->ps.client_ui_state != CLIENT_UI_CINEMATIC) return;
+    G_PublishEndCinematicForHumans(clent, false);
+}
+
 void UI_ShowQuest(edict_t *ent, quest_t const *quest);
 
 CLIENTCOMMAND(Quests) {
@@ -3207,6 +3214,7 @@ clientCommand_t clientCommands[] = {
     { "smartpoint", CMD_SmartPoint },
     { "touch", CMD_Touch },
     { "cancel", CMD_Cancel },
+    { "cinematic_skip", CMD_CinematicSkip },
     { "canceltrain", CMD_CancelTrain },
     { "quests", CMD_Quests },
     { "quest", CMD_Quest },
