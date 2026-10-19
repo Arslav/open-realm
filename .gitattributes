@@ -1,1 +1,3 @@
 * text=auto eol=lf
+# Retained evidence and upstream notices must round-trip with their recorded hashes.
+packaging/android/angle/NOTICE-sdk35.txt -text -whitespace

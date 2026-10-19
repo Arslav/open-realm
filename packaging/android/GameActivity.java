@@ -35,6 +35,9 @@ public class GameActivity extends SDLActivity {
         }
         if (credits || intent.getBooleanExtra("tft", false)) args.add("-tft");
         if (!smoke) {
+            String backend = intent.getStringExtra("backend");
+            if ("gl".equals(backend) || "vulkan".equals(backend))
+                args.addAll(Arrays.asList("+set", "r_backend", backend));
             int profile = intent.getIntExtra("profile", 0), particles = intent.getIntExtra("particles", -1);
             if (profile >= 1 && profile <= 2) args.addAll(Arrays.asList("+set", "r_profile", Integer.toString(profile)));
             if (particles == 0 || particles == 1) args.addAll(Arrays.asList("+set", "r_particles", Integer.toString(particles)));

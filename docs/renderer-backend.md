@@ -307,6 +307,130 @@ Each helper compares against the cached value and only issues the GL call on del
 add thin pipeline objects, the root-struct push, and the texture heap. Surface sorting (by pipeline +
 blend/depth bits) waits until draws are no longer immediate.
 
+## Vulkan feasibility on Honor (October 18, 2026)
+
+The owner's Vulkan question was assessed against the
+fresh native-resolution profile (`games/warcraft-3/performance.md#fresh-post-merge-honor-profile-at-native-resolution-october-18`; section follows in this series)
+and the actual Honor device. Read-only commands, without restarting the game:
+
+```sh
+adb -s AE5HCP3B27401902 shell pm list features
+adb -s AE5HCP3B27401902 shell cmd gpu vkjson
+```
+
+The Android feature reports include Vulkan level 1 and version integer 4198400
+(1.1.0). The physical device dump identifies **Mali-G52 MC2**, integrated GPU,
+with `apiVersion = 4198577` (**Vulkan 1.1.177**) and raw driver version
+134221824. Its reported limits include a 65536-byte uniform-buffer range,
+268435456-byte storage-buffer range, 256-byte push constants and four bound
+descriptor sets. `multiDrawIndirect` is **false**;
+`drawIndirectFirstInstance`, ETC2 and ASTC LDR are true. Do not assume Vulkan
+1.3, descriptor indexing or multi-draw indirect from this device name. Capability
+enumeration establishes API availability, not performance or rendering correctness.
+
+The current application is GL/GLES-specific beyond one central wrapper:
+`renderer/r_buffer.c` submits GL draws/uploads; `renderer/shader_desc.h` uses
+the GL shader module; the WC3 MDX renderer directly uploads/binds palettes and
+draws instances in `r_mdx_geoset.c`. The thin-pipeline/root-struct API above
+describes the target design; the remaining raster-state split is not already
+implemented as a complete API-independent backend. A Vulkan port therefore
+needs resource lifetime/allocation, pipelines, shader interfaces/SPIR-V,
+descriptors, render passes, synchronization and swapchain handling, including
+terrain, MDX, decals, fog, particles, transparency and UI. Preserve game/client
+ownership and the existing GLES backend while introducing it.
+
+The measured Mali driver leaf share is 22.31/20.87% of active main-thread CPU;
+this is **not** the same percentage of wall frame time or a measured Vulkan
+speedup. Vulkan could reduce GL validation/state/upload overhead and allow
+parallel recording. It does not automatically reduce game simulation, sight
+calculations, CPU animation sampling or CPU decal clipping. Existing EGL blocked
+spans are not GPU timers, and a different API can change synchronization as well
+as CPU cost. The profile does not predict 40–60 FPS from the API change alone.
+
+An appropriate experiment is a selectable second backend with a representative
+MDX/material/instancing pilot, including animation palettes and correct depth
+and transparent-layer ordering. Compare identical submitted work and framebuffer
+output first. A draw-only pilot measures renderer potential; only a subsequent
+complete same-scene integration at **100% native resolution** can establish
+whole-game FPS. Keep pipeline/descriptor allocation and shader compilation out
+of measured steady-state windows, and separate correctness/validation runs from
+performance runs. Retain both backends and all results under the
+[experiment policy](performance-experiments.md).
+
+Primary guidance:
+
+- [Khronos threading](https://docs.vulkan.org/guide/latest/threading.html):
+  independent command pools allow parallel command recording; the application
+  still owns synchronization.
+- [Khronos command-buffer sample](https://docs.vulkan.org/samples/latest/samples/performance/command_buffer_usage/README.html):
+  pool reuse, balanced work and enough draws per secondary buffer matter;
+  additional buffers/threads can introduce overhead.
+- [Android Vulkan design guidelines](https://developer.android.com/ndk/guides/graphics/design-notes):
+  explicit pipeline/resource optimizations and mobile render-pass organization
+  are necessary; a poorly structured Vulkan renderer can be slower than GLES.
+
+No backend implementation, APK build/install or game interruption accompanied
+that initial feasibility check. The subsequent implementation is recorded below.
+
+## Android graphics API selection through ANGLE
+
+The Android test package now has two restart-time paths, selected by archived
+`r_backend`: `gl` (default, system EGL/GLES) and `vulkan` (packaged ANGLE on
+the device Vulkan driver). WC3's Video settings reuse the unused mobile gamma
+row for **Graphics API**, with **OpenGL ES** / **Vulkan (ANGLE)** and a restart
+notice. The new popup clones the native resolution-popup style; existing FDF
+label/row anchors remain intact. OK saves the cvar through the existing config
+flow. This is a complete GLES-to-Vulkan bridge, not a native Vulkan renderer or
+parallel command-recording implementation.
+
+`refExport_t.GraphicsBackends()` is a mandatory generic availability callback.
+It returns GL everywhere, and also Vulkan when this Android build includes
+`BZ_ANGLE_VULKAN`, the two app-local libraries load, and Vulkan enumerates a
+hardware GPU. Optional-package/probe failures are logged and the unavailable
+choice is absent. An explicitly requested unsupported/unknown backend fails at
+startup; it does not silently run another API.
+
+`R_SelectGraphicsBackend` sets SDL's EGL/GLES library choices before creating
+the window. After the context is current, `R_VerifyGraphicsBackend` loads every
+required GLES3 entry through `SDL_GL_GetProcAddress` and checks `GL_RENDERER`.
+A Vulkan request requires both ANGLE and Vulkan in that string. Android's
+renderer has no `libGLESv3` dependency or undefined core `gl*` symbols: typed
+`bz_gl` dispatch in `r_gl_api.h`/`.inc` covers the shared renderer, vendor shader
+module and WC3 renderer together. Missing required entries clear the entire
+dispatch and fail initialization; context teardown clears it too. Never mix
+system GL entry points with an ANGLE context.
+
+The initial AOSP prebuilt (`3f647b1bf9a4`) is retained as a failed control. It
+caused huge screen-spanning particle triangles and disappearing terrain on
+Honor. The diagnostic run caught `GL_INVALID_OPERATION` at `glDrawArrays`;
+`KHR_debug` identified **Internal Vulkan error**, rather than a front-end
+buffer-range error. Captured coordinates were finite and the active VAO/VBO
+range was valid. The simple production-particle readback passed on both system
+GLES and the old ANGLE, so it alone did not reproduce the whole-game failure.
+The exact failing internal Vulkan operation/result remains unidentified.
+
+The selected replacement is the pinned ARM64 prebuilt from official SDK Android
+35 default image revision 2. It loads on Android 12 Honor, reports hardware
+Mali/Vulkan, and completes the same diagnostic scenario without the old GL/KHR
+error. The embedded ANGLE git hash is unknown; identify it by image fingerprint
+and library hashes. See [pins, notices and import recipe](https://github.com/corepunch/open-realm/blob/main/packaging/android/angle/README.md).
+Its ELF LOAD alignment is 16 KiB, replacing the legacy binary's 4 KiB limit;
+whole-package compatibility on untested Android devices is not established.
+
+`DIAG_OUTPUT` now writes GL error codes and source locations to stderr before
+asserting; buffered stdout previously lost the useful diagnostic on Android
+abort. The dynamic `glGetError` alias is parenthesized so its dispatch member
+does not expand the unrelated function-like `GetError()` macro. Temporary
+per-frame geometry dumping is retained only in the experiment archive, not in
+the working render loop.
+
+Validation includes menu capability/selection/persistence/reinitialization and
+authored-anchor tests, transactional dispatch tests, pinned-import rejection
+tests, all game build consumers, Android instrumentation, and device UI/scene
+checks. Native GLES-only and ANGLE-enabled renderer builds both link without a
+system GL dependency. Performance conclusions and their scene/variance limits
+are in WC3 performance (`games/warcraft-3/performance.md#angle-vulkan-bridge-on-honor-october-18`; section follows in this series).
+
 ## Key constraints
 
 - `R_Call(gl...)` stays for diagnostics; `RB_*` uses it internally.

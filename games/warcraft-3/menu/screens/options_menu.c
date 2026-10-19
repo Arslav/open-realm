@@ -126,6 +126,46 @@ static void OptionsMenu_SetPopupTitle(frameDef_t *popup, cstring_t text) {
     }
 }
 
+/* The mobile renderer has no gamma-ramp control. Reuse that authored row and
+ * the native resolution-popup art instead of adding another hardcoded layout. */
+static void OptionsMenu_InitGraphicsBackend(void) {
+    refExport_t *renderer = mi.GetRenderer();
+    if (!(renderer->GraphicsBackends() & GRAPHICS_BACKEND_VULKAN)) return;
+    if (!options_menu.GammaLabel || !options_menu.ResolutionLabel || !options_menu.ResolutionBackdrop) {
+        fprintf(stderr, "UI: graphics API row requires the native gamma label and resolution popup\n"); return;
+    }
+    frameDef_t *backdrop = UI_FindChildFrame(options_menu.VideoPanel, "GraphicsAPIBackdrop");
+    if (!backdrop) {
+        backdrop = UI_CloneFrameTree(options_menu.ResolutionBackdrop, options_menu.VideoPanel);
+        if (!backdrop) { fprintf(stderr, "UI: cannot clone graphics API popup\n"); return; }
+        snprintf(backdrop->Name, sizeof(backdrop->Name), "GraphicsAPIBackdrop");
+        /* Only the new popup needs extra clearance below the panel title.
+         * Keep the authored labels and every following row's geometry intact. */
+        backdrop->AnyPointsSet = false;
+        UI_SetPoint(backdrop, options_menu.ResolutionBackdrop->SetPoint.type, options_menu.GammaLabel,
+                    options_menu.ResolutionBackdrop->SetPoint.target,
+                    options_menu.ResolutionBackdrop->SetPoint.x, options_menu.ResolutionBackdrop->SetPoint.y - 0.0125f);
+        frameDef_t *popup = UI_FindChildFrame(backdrop, "ResolutionMenu");
+        frameDef_t *menu = popup ? UI_FindChildFrame(popup, popup->Popup.MenuFrame) : NULL;
+        if (!popup || !menu) { fprintf(stderr, "UI: graphics API popup lacks native popup children\n"); return; }
+        snprintf(popup->Name, sizeof(popup->Name), "GraphicsAPIMenu");
+        snprintf(menu->Name, sizeof(menu->Name), "GraphicsAPIPopupMenuMenu");
+        snprintf(popup->Popup.MenuFrame, sizeof(popup->Popup.MenuFrame), "%s", menu->Name);
+    }
+    frameDef_t *popup = UI_FindChildFrame(backdrop, "GraphicsAPIMenu");
+    frameDef_t *menu = popup ? UI_FindChildFrame(popup, popup->Popup.MenuFrame) : NULL;
+    if (!popup || !menu) { fprintf(stderr, "UI: cannot bind graphics API popup\n"); return; }
+    UI_SetText(options_menu.GammaLabel, "Graphics API");
+    OptionsMenu_SetHidden(options_menu.GammaSlider, true);
+    OptionsMenu_SetHidden(options_menu.GammaNotch, true);
+    OptionsMenu_SetHidden(options_menu.GammaBrightLabel, true);
+    if (options_menu.GammaDarkLabel) UI_SetText(options_menu.GammaDarkLabel, "Restart required");
+    UI_MenuClearItems(menu);
+    UI_MenuAddItem(menu, "OpenGL ES", 0); UI_MenuAddItem(menu, "Vulkan (ANGLE)", 1);
+    UI_SetOnClick(menu, "menu_graphics_backend"); UI_SetHidden(menu, true);
+    OptionsMenu_SetPopupTitle(popup, !strcmp(mi.Cvar_String("r_backend", "gl"), "vulkan") ? "Vulkan (ANGLE)" : "OpenGL ES");
+}
+
 static void OptionsMenu_SetPopupItems(frameDef_t *popup,
                                       frameDef_t *menu,
                                       optionsMenuItem_t const *items,
@@ -410,6 +450,7 @@ static void OptionsMenu_InitVideoMenus(void) {
                               OPTIONS_ARRAY_COUNT(toggle_items),
                               OptionsMenu_CvarSelection("r_occlusion", 1, OPTIONS_ARRAY_COUNT(toggle_items)));
     OptionsMenu_SetPopupCvar(options_menu.OcclusionPopupMenuMenu, "r_occlusion");
+    OptionsMenu_InitGraphicsBackend();
 }
 
 static void OptionsMenu_InitGameplayMenus(void) {

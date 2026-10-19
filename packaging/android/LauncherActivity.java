@@ -136,11 +136,13 @@ public class LauncherActivity extends Activity {
         final int scale = getIntent().getIntExtra("scale", 67);
         final int profile = getIntent().getIntExtra("profile", 0), particles = getIntent().getIntExtra("particles", -1);
         final String map = getIntent().getStringExtra("map");
+        final String backend = getIntent().getStringExtra("backend");
         getIntent().removeExtra("frames");
         getIntent().removeExtra("scale");
         getIntent().removeExtra("map");
         getIntent().removeExtra("profile");
         getIntent().removeExtra("particles");
+        getIntent().removeExtra("backend");
         busy = true;
         updateStatus();
         status.setText("Preparing game…");
@@ -155,6 +157,7 @@ public class LauncherActivity extends Activity {
                     game.putExtra("profile", profile);
                     game.putExtra("particles", particles);
                     if (map != null) game.putExtra("map", map);
+                    if (backend != null) game.putExtra("backend", backend);
                     startActivity(game);
                     busy = false;
                     updateStatus();

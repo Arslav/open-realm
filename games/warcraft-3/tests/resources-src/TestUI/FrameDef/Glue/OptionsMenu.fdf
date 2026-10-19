@@ -53,7 +53,19 @@ Frame "FRAME" "OptionsMenu" {
         }
 
         Frame "FRAME" "VideoPanel" {
+            Frame "TEXT" "GammaLabel" INHERITS "StandardInfoTextTemplate" {
+                Text "GAMMA",
+            }
+            Frame "TEXT" "GammaDarkLabel" INHERITS "StandardLabelTextTemplate" {
+                SetPoint TOPLEFT, "GammaLabel", BOTTOMLEFT, 0.007, -0.005,
+                Text "DARK",
+            }
+            Frame "TEXT" "ResolutionLabel" INHERITS "StandardInfoTextTemplate" {
+                SetPoint TOPLEFT, "GammaLabel", BOTTOMLEFT, 0.0, -0.04,
+                Text "COLON_RESOLUTION",
+            }
             Frame "BACKDROP" "ResolutionBackdrop" {
+                SetPoint LEFT, "ResolutionLabel", RIGHT, 0.0675, -0.00125,
                 Frame "POPUPMENU" "ResolutionMenu" {
                     PopupTitleFrame "ResolutionPopupMenuTitle",
                     PopupMenuFrame "ResolutionPopupMenuMenu",

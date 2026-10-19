@@ -1,5 +1,17 @@
 # Mixed-army Android performance scene
 
+Current measurement policy: the owner requested **100% native render resolution**
+for subsequent Honor captures on October 18. Use `r_render_scale 100`, verify
+the actual drawable dimensions (1920x1200 on this Honor) and confirm that no
+scaled render target is active. After source merges, verify the measured APK's
+native modules against a build of the current tree and resolve CPU samples
+using that APK's symbols. Historical 67% captures below keep their original
+settings and are not controls for a different revision at 100%.
+
+The ANGLE/Vulkan trial (`$OPENREALM_EXPERIMENTS_DIR/warcraft-3/optimization-archive/vulkan-backend-20261018/README.md`, external archive)
+retains the current 100% GLES/Vulkan comparison, artifact checks and exact package
+identity. Backend availability alone is not evidence of a performance gain.
+
 The two-model allied benchmark does not represent TFT campaign performance.
 On the same Honor and ordinary APK, the opening playable view of
 `Maps/FrozenThrone/Campaign/NightElfX01.w3x` averaged **19.40 FPS**, and the

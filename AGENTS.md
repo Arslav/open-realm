@@ -201,7 +201,7 @@ This codebase is inspired by **Quake 2** (id Software). The developer is deeply 
 | iPad packaging without Xcode project, Makefile-driven SDL2/GLES3 build, bundle/sign/deploy, Documents data import | [packaging/ipad/README.md](packaging/ipad/README.md) |
 | Android SDK/emulator, GLES3 shader probe, full WC3 APK, MPQ importer and on-device startup tests | [docs/android.md](docs/android.md) |
 | Shared model shader lighting and packed grass uniform contracts | [docs/architecture/model-shader.md](docs/architecture/model-shader.md) |
-| Renderer backend: thin pipelines, root struct, GL state cache, MSAA/alpha-key, `r_stats` | [docs/renderer-backend.md](docs/renderer-backend.md) |
+| Renderer backend: thin pipelines, GL dispatch, Android ANGLE/Vulkan settings, MSAA/alpha-key, `r_stats` | [docs/renderer-backend.md](docs/renderer-backend.md) |
 | `CS_SKY`, WC3 `SetSkyModel`, camera-relative sky models, sequence-0 animation, cross-game producer gaps | [docs/architecture/skybox-and-cs-sky.md](docs/architecture/skybox-and-cs-sky.md) |
 
 ## Coding Style
@@ -531,6 +531,8 @@ Follow Quake 2's pattern. Never fail silently, never crash, never log per-frame.
 ## PR Hygiene and Protocol Stability
 
 - **During optimization, prepare ordinary/distribution builds only when the user explicitly requests them.** Build only the test/profile artifacts needed for the current experiment; do not add a normal APK or desktop packaging pass as a routine finishing step. Reuse a suitable existing test build when possible. This is the project owner's instruction of October 18, 2026.
+- **Honor performance measurements use 100% native resolution.** Confirm `r_render_scale 100` and the actual drawable dimensions before capture. After a merge, verify the measured APK against the current native modules and use its matching symbols; older 67% profiles remain historical evidence. See [combat benchmark](docs/games/warcraft-3/combat-benchmark.md). This is the owner's subsequent October 18 instruction.
+- **Keep server optimizations valid for future LAN.** Preserve authoritative updates for every player, independent of the local camera. Evaluate visibility/presentation for each recipient and retain tick, RNG, ordering and wire semantics. Cover multiple non-local player numbers, alliances and disconnect state in tests. This is the owner's October 18 instruction.
 - **Enable optimizations with verified benefit by default on the measured target platforms.** After correctness/quality checks and representative comparisons pass, do not ask separately to enable a successful optimization. Keep its on/off path and measurements; variants with uncertain benefit or regressions remain selectable experiments. This is the project owner's instruction of October 18, 2026.
 - **Preserve optimization experiments even when a benchmark shows no gain or a regression.** Keep a complete opt-in
   implementation with a documented toggle, or preserve its code/tests as an indexed branch or reproducible patch/source

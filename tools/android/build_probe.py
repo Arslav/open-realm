@@ -7,6 +7,7 @@ import shlex
 import subprocess
 import time
 import zipfile
+from fetch_angle import CACHE as ANGLE_CACHE, fetch as fetch_angle
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = "org.openrealm.probe"
@@ -27,8 +28,13 @@ def main():
     parser.add_argument("--game", action="store_true", help="build the full WC3 runtime and MPQ importer")
     parser.add_argument("--credits", action="store_true", help="build WC3 with automatic TFT final-credits startup and render stats")
     parser.add_argument("--serial", help="install/launch on this adb device; the probe also requires RESULT PASS")
+    parser.add_argument("--angle-dir", type=Path, help="import the pinned SDK35 ANGLE libraries from this directory")
+    parser.add_argument("--without-angle", action="store_true", help="build with system GLES only")
     args = parser.parse_args()
+    if args.angle_dir and args.without_angle:
+        parser.error('--angle-dir and --without-angle are mutually exclusive')
     args.game = args.game or args.credits
+    angle = fetch_angle(ANGLE_CACHE, args.angle_dir) if args.game and not args.without_angle else None
     sdk, sdl, out = (Path(value).resolve() for value in
         (args.sdk, args.sdl, args.out or ROOT / ("build/android/game" if args.game else "build/android/probe")))
     ndk = sdk / "ndk" / args.ndk_version
@@ -48,7 +54,7 @@ def main():
     run(["cmake", "-S", ROOT / "packaging/android", "-B", native, "-G", "Unix Makefiles",
          f"-DCMAKE_TOOLCHAIN_FILE={ndk}/build/cmake/android.toolchain.cmake", "-DANDROID_ABI=arm64-v8a",
          "-DANDROID_PLATFORM=android-26", "-DCMAKE_BUILD_TYPE=RelWithDebInfo", f"-DSDL_SOURCE_DIR={sdl}",
-         f"-DBZ_ANDROID_GAME={'ON' if args.game else 'OFF'}"])
+         f"-DBZ_ANDROID_GAME={'ON' if args.game else 'OFF'}", f"-DBZ_ANGLE_VULKAN={'ON' if angle else 'OFF'}"])
     run(["cmake", "--build", native, "--target", *( ["warcraft3", "mpqcheck"] if args.game else ["main"] ),
          "--parallel", "3"])
     classes, dex = out / "classes", out / "dex"
@@ -83,6 +89,12 @@ def main():
             libraries.append((f"lib{name}.so", native / f"lib{name}.so"))
         for name, source in libraries:
             apk.write(source, f"lib/arm64-v8a/{name}")
+        if angle:
+            for name in ("libEGL_angle.so", "libGLESv2_angle.so"):
+                apk.write(angle / name, f"lib/arm64-v8a/{name}")
+            apk.write(ROOT / "packaging/android/angle/LICENSE", "assets/share/angle/LICENSE")
+            apk.write(ROOT / "packaging/android/angle/NOTICE-sdk35.txt", "assets/share/angle/NOTICE-sdk35.txt")
+            apk.write(angle / "manifest.json", "assets/share/angle/manifest.json")
         if args.game:
             for source_dir, target in ((ROOT / "share", "share"), (ROOT / "games/warcraft-3/share", "share/warcraft-3")):
                 for path in sorted(source_dir.rglob("*")):

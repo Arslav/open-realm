@@ -571,6 +571,7 @@ void Cvar_Init(void) {
     Cvar_GetD("vid_native",       "0",                 CVAR_ARCHIVE, "use the current desktop resolution instead of vid_mode");
     Cvar_GetD("vid_fullscreen",   "0",                 CVAR_ARCHIVE, "window mode: 0=windowed, 1=fullscreen");
     Cvar_GetD("vid_modes",        "0",                 0,            "log SDL display modes during video initialization");
+    Cvar_GetD("r_backend",        "gl",                CVAR_ARCHIVE, "graphics backend: gl or vulkan (ANGLE); restart the game to apply");
     Cvar_GetD("r_model_detail",   "2",                 CVAR_ARCHIVE, "model LOD quality: 0=low, 1=medium, 2=high");
     Cvar_GetD("r_anim_quality",   "2",                 CVAR_ARCHIVE, "animation interpolation quality: 0=off, 2=full");
     Cvar_GetD("r_texture_quality","2",                 CVAR_ARCHIVE, "texture mip level: 0=low, 1=medium, 2=full");

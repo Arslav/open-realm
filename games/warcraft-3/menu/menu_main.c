@@ -57,6 +57,7 @@ static void UI_MenuOptionsGameplay_f(void);
 static void UI_MenuOptionsSound_f(void);
 static void UI_MenuOptionsApply_f(void);
 static void UI_MenuRenderScale_f(void);
+static void UI_MenuGraphicsBackend_f(void);
 static void UI_MenuSinglePlayerCampaign_f(void);
 static void UI_MenuGameSetupStart_f(void);
 static void UI_MenuCampaignHuman_f(void);
@@ -113,6 +114,7 @@ static const menucommand_t menu_commands[] = {
     { "menu_single_player_campaign_tutorial", UI_MenuCampaignTutorial_f },
     { "menu_video_mode", UI_MenuVideoMode_f },
     { "menu_render_scale", UI_MenuRenderScale_f },
+    { "menu_graphics_backend", UI_MenuGraphicsBackend_f },
     { "menu_single_player_campaign_select", UI_MenuCampaignSelect_f },
     { "menu_single_player_mission_select", UI_MenuMissionSelect_f },
     { "menu_single_player_difficulty", UI_MenuDifficulty_f },
@@ -634,6 +636,16 @@ static void UI_MenuRenderScale(uint32_t value) {
     mi.Cmd_ExecuteText(command);
 }
 static void UI_MenuRenderScale_f(void) { UI_MenuIndex(UI_MenuRenderScale); }
+static void UI_MenuGraphicsBackend(uint32_t value) {
+    static cstring_t const choices[] = { "seta r_backend gl\n", "seta r_backend vulkan\n" };
+    refExport_t *renderer = mi.GetRenderer();
+    uint32_t available = renderer->GraphicsBackends();
+    if (value >= sizeof(choices) / sizeof(*choices) || !(available & (1u << value))) {
+        fprintf(stderr, "UI: graphics backend %u is unavailable\n", (unsigned)value); return;
+    }
+    mi.Cmd_ExecuteText(choices[value]);
+}
+static void UI_MenuGraphicsBackend_f(void) { UI_MenuIndex(UI_MenuGraphicsBackend); }
 static void UI_MenuCampaignSelect_f(void) { UI_MenuIndex(SinglePlayerMenu_LaunchCampaignIndex); }
 static void UI_MenuMissionSelect_f(void) { UI_MenuIndex(SinglePlayerMenu_LaunchMissionIndex); }
 static void UI_MenuDifficulty_f(void) { UI_MenuIndex(SinglePlayerMenu_SetDifficulty); }

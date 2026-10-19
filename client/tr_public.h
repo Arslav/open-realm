@@ -32,6 +32,11 @@ typedef enum {
     SHADER_COUNT,
 } SHADERTYPE;
 
+enum {
+    GRAPHICS_BACKEND_GL = 1 << 0,
+    GRAPHICS_BACKEND_VULKAN = 1 << 1,
+};
+
 /* Shared flags for draw structs */
 enum {
     DRAW_CLIP      = 1 << 0,
@@ -336,6 +341,9 @@ typedef struct {
     bool (*TraceMinimap)(float x, float y, vec2_t *outWorld);
     bool (*WorldToMinimap)(vec2_t const *world, vec2_t *outScreen);
     uint32_t (*EntitiesInRect)(viewDef_t const *viewdef, rect_t const *rect, uint32_t max, uint32_t *array);
+
+    /* Available graphics paths for the current build/device; selection takes effect at startup. */
+    uint32_t (*GraphicsBackends)(void);
 
 } refExport_t;
 

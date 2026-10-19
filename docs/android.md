@@ -706,5 +706,71 @@ the new defaults as 0, and explicit settings select each comparison. It remains
 installed with ability/visibility saved as 1 in the original config, existing
 palette mode 2 retained, and the test-only startup map/bindings/profiling removed.
 All current save/checkpoint hashes and the other backed-up files are verified.
+
+The subsequent post-merge profile uses revision `64be2dac` and the already
+installed matching `db6ff813…` APK. The owner's current measurement policy is
+**100% native resolution**: logs verify `r_render_scale 100`, a 1920x1200
+drawable and no scaled framebuffer. Two separate FPS windows yield 18.224 /
+18.637 FPS, combined **18.431 FPS**. Two independent CPU recordings have zero
+sample loss; a separate scheduler trace is complete. These measurements are a
+new baseline, not an A/B result against an older revision at 67%. Original
+settings, campaign/map/log bytes and all save/checkpoint hashes are restored;
+no packaging or install is needed. See the fresh profile and CPU targets (`games/warcraft-3/performance.md#fresh-post-merge-honor-profile-at-native-resolution-october-18`; section follows in this series)
+and raw evidence/recipes (`$OPENREALM_EXPERIMENTS_DIR/warcraft-3/optimization-archive/native-profile-20261018/README.md`, external archive).
 See [contracts, all windows and CPU evidence](games/warcraft-3/performance.md#ability-visibility-and-splat-cpu-work-october-18)
 and the complete retained trial (`$OPENREALM_EXPERIMENTS_DIR/warcraft-3/optimization-archive/cpu-work-families-20261018/README.md`, external archive).
+
+## Selectable ANGLE Vulkan experiment
+
+The game test APK includes app-local ANGLE with a Video settings **Graphics API**
+choice: **OpenGL ES** / **Vulkan (ANGLE)**. OK saves `r_backend gl` or
+`r_backend vulkan`; restart the application to apply it. Source default remains
+GLES. The control appears only when the packaged libraries load and the device
+has hardware Vulkan. No Android global driver setting or Mali driver is changed.
+
+Prepare the exact pinned SDK35 libraries once with the
+[read-only import recipe](https://github.com/corepunch/open-realm/blob/main/packaging/android/angle/README.md#prepare-once).
+The normal game test-APK command then verifies their hashes and packages the
+manifest/license/notices. `--without-angle` builds GLES only; `--angle-dir`
+imports already extracted matching files. There is no automatic substitution
+of another ANGLE build when this cache is absent/corrupt. Tests cover import,
+cache reuse, corrupt/wrong-ABI rejection, and preserving an existing cache when
+the second source library is invalid.
+
+For a bounded diagnostic launch, the Android intent accepts only `gl`/`vulkan`:
+
+```sh
+adb -s AE5HCP3B27401902 shell am start -S -W \
+  -n org.openrealm.wc3/.LauncherActivity --ez play true --ez tft true \
+  --ei frames 1800 --es backend vulkan
+```
+
+Ordinary launch supplies no backend override and uses the saved setting.
+`--es backend gl` can recover a run from an unsuitable Vulkan selection; save
+OpenGL ES in Video settings before restarting normally. Headless smoke ignores
+graphics overrides. `--ei profile 2` requests GPU queries and overrides an
+`r_profile` value from autoexec, so confirm actual `[R_GPU]` rows before reporting
+GPU timing. Instrumentation on this Honor prints the custom PASS stream without
+a literal `result=PASS`; verify the explicit import/startup/clean-exit assertions.
+
+The first AOSP ANGLE trial had huge particle triangles, disappearing terrain,
+internal Vulkan errors and roughly 2 FPS in combat. Switching only its app-local
+ANGLE libraries to the pinned SDK35 binaries removes the reproduced GL error
+and restores performance near GLES. This does not establish a major speedup or
+40 FPS. See measurements and limitations (`games/warcraft-3/performance.md#angle-vulkan-bridge-on-honor-october-18`; section follows in this series)
+and the complete retained trial (`$OPENREALM_EXPERIMENTS_DIR/warcraft-3/optimization-archive/vulkan-backend-20261018/README.md`, external archive).
+
+The subsequent Durotar opening profile (`games/warcraft-3/performance.md#durotar-opening-mission-profile-at-native-resolution-october-18`; section follows in this series)
+reproduces 10–11 FPS at 100% native resolution on both GLES and Vulkan. Four
+CPU recordings identify map-wide simulation, visibility/tint and selection
+scans; GPU and scheduler windows are recorded separately. See the
+raw profiles and recipes (`$OPENREALM_EXPERIMENTS_DIR/warcraft-3/optimization-archive/durotar-profile-20261018/README.md`, external archive).
+
+The subsequent server scan changes (`games/warcraft-3/performance.md#lan-safe-server-scan-package-on-durotar-october-18`; section follows in this series)
+retain LAN-recipient semantics and improve the same 100%-native OrcX01
+intro/gameplay by 20.99% / 16.09% in a same-APK A/B/B/A comparison. Android
+defaults enable `wc3_selection_mask`, `wc3_tint_fast` and
+`wc3_aura_candidates`; setting any option to 0 retains its reference path.
+The complete trial (`$OPENREALM_EXPERIMENTS_DIR/warcraft-3/optimization-archive/server-work-20261018/README.md`, external archive)
+separates prototype comparisons from final default activation and preserves
+all sources, tests, raw windows and user-file restoration proof.

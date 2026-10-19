@@ -29,20 +29,13 @@
 #endif
 
 #ifdef DIAG_OUTPUT
-#define GetError()\
-{\
-    for (GLenum Error = glGetError(); (GL_NO_ERROR != Error); Error = glGetError())\
-    {\
-        switch (Error)\
-        {\
-            case GL_INVALID_ENUM:      printf("\n%s\n\n", "GL_INVALID_ENUM"    ); assert(0); break;\
-            case GL_INVALID_VALUE:     printf("\n%s\n\n", "GL_INVALID_VALUE"   ); assert(0); break;\
-            case GL_INVALID_OPERATION: printf("\n%s\n\n", "GL_INVALID_OPERATION"); assert(0); break;\
-            case GL_OUT_OF_MEMORY:     printf("\n%s\n\n", "GL_OUT_OF_MEMORY"   ); assert(0); break;\
-            default:                                                                              break;\
-        }\
-    }\
-}
+#define GetError() do { \
+    for (GLenum error = glGetError(); error != GL_NO_ERROR; error = glGetError()) { \
+        /* stderr survives an assertion; buffered stdout lost the Android diagnostic. */ \
+        fprintf(stderr, "Renderer: GL error 0x%04x at %s:%d\n", error, __FILE__, __LINE__); \
+        assert(0); \
+    } \
+} while (0)
 #else
 #define GetError() do { } while (0)
 #endif
@@ -74,6 +67,13 @@ typedef enum render_phase_e {
 #include "../client/tr_public.h"
 #include "r_alpha.h"
 #include "r_profile.h"
+#ifdef BZ_GL_DYNAMIC
+#include "r_gl_api.h"
+#endif
+
+uint32_t R_GraphicsBackends(void);
+bool R_SelectGraphicsBackend(void);
+bool R_VerifyGraphicsBackend(void);
 
 extern refImport_t ri;
 

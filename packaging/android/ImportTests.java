@@ -62,6 +62,17 @@ public class ImportTests extends Instrumentation {
             String startup = String.join("\n", GameActivity.arguments(getTargetContext().getFilesDir(), getTargetContext().getCacheDir(), launch));
             require(startup.contains("+com_frame_limit\n123"), "Bounded launch lost its frame limit");
             require(!startup.contains("r_profile") && !startup.contains("r_particles"), "Normal launch enables diagnostic overrides");
+            require(!startup.contains("r_backend"), "Normal launch overrides the saved graphics backend");
+            for (String backend : new String[] { "gl", "vulkan" }) {
+                Intent graphics = new Intent().putExtra("backend", backend);
+                String graphicsArgs = String.join("\n", GameActivity.arguments(getTargetContext().getFilesDir(), getTargetContext().getCacheDir(), graphics));
+                require(graphicsArgs.contains("r_backend\n" + backend), "Requested graphics backend was lost");
+                graphics.putExtra("smoke", true);
+                graphicsArgs = String.join("\n", GameActivity.arguments(getTargetContext().getFilesDir(), getTargetContext().getCacheDir(), graphics));
+                require(!graphicsArgs.contains("r_backend"), "Headless smoke launch inherited graphics selection");
+            }
+            Intent invalidGraphics = new Intent().putExtra("backend", "invalid");
+            require(!String.join("\n", GameActivity.arguments(getTargetContext().getFilesDir(), getTargetContext().getCacheDir(), invalidGraphics)).contains("r_backend"), "Invalid graphics backend was accepted");
             Intent diagnostic = new Intent().putExtra("profile", 2).putExtra("particles", 0);
             startup = String.join("\n", GameActivity.arguments(getTargetContext().getFilesDir(), getTargetContext().getCacheDir(), diagnostic));
             require(startup.contains("r_profile\n2") && startup.contains("r_particles\n0"), "Diagnostic overrides were lost");

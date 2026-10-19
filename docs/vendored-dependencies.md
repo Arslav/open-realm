@@ -40,3 +40,23 @@ OpenWarcraft compiles its own Lua and XML parser from checked-in sources, matchi
 - Unity-included once by `renderer/r_shader.c`; update both repositories' complete vendor directory together.
 - See [shared shaders](architecture/shared-shaders.md) and the [module contract](https://github.com/corepunch/open-realm/blob/main/vendor/gl_shader/README.md).
 - `make test-gl-shader` exercises the shared contract; renderer model/shadow tests exercise integration.
+
+## Android ANGLE prebuilts (optional renderer path)
+
+The Android game test-APK builder uses hash-pinned ARM64 libraries from official
+SDK Android 35 default image revision 2. `tools/android/extract_angle.py`
+imports them read-only from a matching running emulator;
+`tools/android/fetch_angle.py` verifies the complete input/cache before replacing
+anything and records fingerprint, byte counts and hashes in the APK manifest.
+The upstream license and all associated SDK-image notices are retained under
+`packaging/android/angle/` and packaged with the libraries. Binaries stay in the
+ignored `build/android/angle/sdk35/arm64-v8a/` cache.
+
+The first, older AOSP prebuilt remains an explicit `--legacy` control in a
+separate cache/archive; it had internal Vulkan errors on Honor. The selected
+SDK35 libraries have 16 KiB ELF LOAD alignment, but that alone does not establish
+whole-APK compatibility on every Android device. They report an unknown embedded
+ANGLE git hash; pin the official image and binary bytes instead. See the
+[pin and provenance](https://github.com/corepunch/open-realm/blob/main/packaging/android/angle/README.md),
+[renderer selection](renderer-backend.md#android-graphics-api-selection-through-angle)
+and [Android workflow](android.md#selectable-angle-vulkan-experiment).

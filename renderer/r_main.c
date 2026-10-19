@@ -24,7 +24,7 @@ extern void *objc_getClass(char const *name);
 extern void *sel_registerName(char const *str);
 extern void *objc_msgSend(void *, void *, ...);
 #endif
-#if !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
+#if !defined(__APPLE__) && !defined(__EMSCRIPTEN__) && !defined(BZ_GL_ES3)
 #include <SDL2/SDL_opengl.h>
 #endif
 
@@ -822,6 +822,7 @@ void R_InitRenderer(uint32_t width, uint32_t height) {
             2L /* NSApplicationActivationPolicyProhibited */);
     }
 #endif
+    if (!R_SelectGraphicsBackend()) Sys_Exit(EXIT_FAILURE);
     SDL_Init(SDL_INIT_VIDEO);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_ACCELERATED_VISUAL, 1);
@@ -905,6 +906,7 @@ void R_InitRenderer(uint32_t width, uint32_t height) {
     }
     if (context && SDL_GL_MakeCurrent(window, context) == 0) {
         GLint drawable_binding = 0;
+        if (!R_VerifyGraphicsBackend()) Sys_Exit(EXIT_FAILURE);
         gl_current = true;
         R_UpdateSwapInterval();
         /* Capture SDL's drawable FBO while it is still bound (creation leaves
@@ -915,6 +917,8 @@ void R_InitRenderer(uint32_t width, uint32_t height) {
         fprintf(stderr, "ref_gl::R_Init() - could not make GL context current: %s\n", SDL_GetError());
     }
 #endif /* __EMSCRIPTEN__ */
+
+    if (!gl_current) { fprintf(stderr, "Renderer: no current graphics context\n"); Sys_Exit(EXIT_FAILURE); }
 
     R_ApplyVideoMode(width, height);
     R_RefreshDrawableSize("initial");
@@ -1042,6 +1046,9 @@ void R_ShutdownRenderer(void) {
 #endif
     SDL_DestroyWindow(window);
     SDL_Quit();
+#ifdef BZ_GL_DYNAMIC
+    R_GLClearDispatch();
+#endif
 }
 
 void R_SetupViewport(rect_t const *r) {
@@ -1374,5 +1381,6 @@ refExport_t R_GetAPI(refImport_t imp) {
         .TraceMinimap = R_TraceMinimap,
         .WorldToMinimap = R_WorldToMinimap,
         .EntitiesInRect = R_EntitiesInRect,
+        .GraphicsBackends = R_GraphicsBackends,
     };
 }

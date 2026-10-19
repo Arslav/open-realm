@@ -54,6 +54,8 @@ static bool test_fs_expansion;
 static bool test_skip_menu_transitions;
 static bool test_background_birth_available = true;
 static int test_vid_native = -1;
+static uint32_t test_graphics_backends = GRAPHICS_BACKEND_GL;
+static cstring_t test_graphics_backend = "gl";
 static cstring_t test_campaign_visibility;
 #define test_campaign_progress_path Test_TempPath("campaign-progress-menu-test.orcp")
 static vec2_t test_mouse_pos;
@@ -334,6 +336,8 @@ static void test_render_frame(viewDef_t const *view) {
     captured_glue_view = *view;
     captured_glue_views++;
 }
+static uint32_t test_get_graphics_backends(void) { return test_graphics_backends; }
+
 static refExport_t *test_get_renderer(void) {
     static refExport_t renderer = {
         .LoadTexture = test_load_texture,
@@ -351,6 +355,7 @@ static refExport_t *test_get_renderer(void) {
         .GetModelAnimationDuration = test_animation_duration,
         .RenderFrame = test_render_frame,
         .GetTextSize = test_get_text_size,
+        .GraphicsBackends = test_get_graphics_backends,
     };
     return &renderer;
 }
@@ -390,6 +395,7 @@ static bool test_play_movie(cstring_t path) {
 
 static cstring_t test_cvar_string(cstring_t name, cstring_t fallback) {
     if (!strcmp(name, "map")) return test_map;
+    if (!strcmp(name, "r_backend")) return test_graphics_backend;
     if (name && !strcmp(name, "ui_skip_transitions")) return test_skip_menu_transitions ? "1" : "0";
     if (name && !strcmp(name, "fs_expansion")) {
         return test_fs_expansion ? "1" : "0";
@@ -1967,6 +1973,72 @@ TEST(menu_fdf, options_resolution_popup_appends_and_selects_native_mode) {
     }
 
     test_vid_native = -1;
+    mi = saved;
+}
+
+TEST(menu_fdf, options_graphics_backend_uses_native_popup_and_persists_valid_choices) {
+    cstring_t files[] = {
+        "UI\\FrameDef\\GlobalStrings.fdf",
+        "UI\\FrameDef\\Glue\\StandardTemplates.fdf",
+        "UI\\FrameDef\\Glue\\OptionsMenu.fdf",
+    };
+    menuImport_t saved = mi;
+    load_ui_files(files, sizeof(files) / sizeof(files[0]));
+    memset(&mi, 0, sizeof(mi));
+    mi.Printf = test_ui_printf; test_command_imports();
+    mi.GetRenderer = test_get_renderer; mi.Cmd_ExecuteText = test_cmd_execute_text;
+    mi.Cvar_String = test_cvar_string; mi.MemAlloc = test_ui_mem_alloc; mi.MemFree = test_ui_mem_free;
+    test_graphics_backends = GRAPHICS_BACKEND_GL | GRAPHICS_BACKEND_VULKAN;
+    test_graphics_backend = "vulkan";
+    T_ASSERT(optionsMenuScreen.load());
+    frameDef_t *root = UI_FindFrame("OptionsMenu");
+    frameDef_t *gamma = UI_FindChildFrame(root, "GammaLabel");
+    frameDef_t *resolution = UI_FindChildFrame(root, "ResolutionLabel");
+    T_NOT_NULL(gamma); T_NOT_NULL(resolution);
+    float gamma_y = gamma->SetPoint.y, resolution_y = resolution->SetPoint.y;
+    optionsMenuScreen.init();
+    T_FEQ(gamma->SetPoint.y, gamma_y, 0.00001f);
+    T_FEQ(resolution->SetPoint.y, resolution_y, 0.00001f);
+    frameDef_t *popup = UI_FindChildFrame(root, "GraphicsAPIMenu");
+    frameDef_t *menu = popup ? UI_FindChildFrame(popup, popup->Popup.MenuFrame) : NULL;
+    T_NOT_NULL(popup); T_NOT_NULL(menu);
+    if (menu) {
+        T_EQ(menu->Menu.ItemCount, 2);
+        T_STREQ(menu->Menu.Items[0].text, "OpenGL ES");
+        T_STREQ(menu->Menu.Items[1].text, "Vulkan (ANGLE)");
+        T_STREQ(menu->OnClick, "menu_graphics_backend");
+        frameDef_t *title = UI_FindChildFrame(popup, popup->Popup.TitleFrame);
+        frameDef_t *text = title ? UI_FindChildFrame(title, "StandardPopupMenuTitleTextTemplate") : NULL;
+        if (require_not_null(text)) T_STREQ(text->Text, "Vulkan (ANGLE)");
+        optionsMenuScreen.init();
+        T_EQ(menu->Menu.ItemCount, 2);
+        T_EQ(UI_FindChildFrame(root, "GraphicsAPIMenu"), popup);
+    }
+    Cmd_ExecuteString("menu_graphics_backend 0");
+    T_STREQ(captured_command, "seta r_backend gl\n");
+    Cmd_ExecuteString("menu_graphics_backend 1");
+    T_STREQ(captured_command, "seta r_backend vulkan\n");
+    snprintf(captured_command, sizeof(captured_command), "unchanged");
+    Cmd_ExecuteString("menu_graphics_backend 42");
+    T_STREQ(captured_command, "unchanged");
+    test_graphics_backends = GRAPHICS_BACKEND_GL;
+    Cmd_ExecuteString("menu_graphics_backend 1");
+    T_STREQ(captured_command, "unchanged");
+    test_graphics_backend = "gl"; mi = saved;
+}
+
+TEST(menu_fdf, options_graphics_backend_is_absent_without_vulkan_support) {
+    cstring_t files[] = {
+        "UI\\FrameDef\\GlobalStrings.fdf",
+        "UI\\FrameDef\\Glue\\StandardTemplates.fdf",
+        "UI\\FrameDef\\Glue\\OptionsMenu.fdf",
+    };
+    menuImport_t saved = mi;
+    load_ui_files(files, sizeof(files) / sizeof(files[0]));
+    mi.Printf = test_ui_printf; test_command_imports(); mi.GetRenderer = test_get_renderer;
+    mi.Cvar_String = test_cvar_string; test_graphics_backends = GRAPHICS_BACKEND_GL;
+    T_ASSERT(optionsMenuScreen.load()); optionsMenuScreen.init();
+    T_NULL(UI_FindChildFrame(UI_FindFrame("OptionsMenu"), "GraphicsAPIMenu"));
     mi = saved;
 }
 
