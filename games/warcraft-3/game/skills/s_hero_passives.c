@@ -1,5 +1,11 @@
 #include "s_skills.h"
 
+#ifdef __ANDROID__
+#define BZ_AURA_CANDIDATES_DEFAULT "1" // mode; Honor scan package +16-21% FPS; skip empty ability sources
+#else
+#define BZ_AURA_CANDIDATES_DEFAULT "0" // mode; unmeasured platforms retain the original path; 1 opts in
+#endif
+
 #define ID_BRILLIANCE MAKEFOURCC('A', 'H', 'a', 'b')
 #define ID_DEVOTION_AURA MAKEFOURCC('A', 'H', 'a', 'd')
 #define ID_CRITICAL_STRIKE MAKEFOURCC('A', 'O', 'c', 'r')
@@ -392,14 +398,24 @@ static uint32_t aura_target_model(uint32_t code) {
     return art && *art ? (uint32_t)G_RegisterModel(art) : 0;
 }
 
+/* Membership remains live each frame: native rows, script additions and learned Hero abilities all qualify. */
+static bool aura_has_abilities(edict_t const *ent) {
+    if ((ent->data.UnitAbilities && ent->data.UnitAbilities->abilList && *ent->data.UnitAbilities->abilList) ||
+        ARRAY_COUNT(ent->abilities.added)) return true;
+    FOR_LOOP(i, MAX_HERO_ABILITIES) if (ent->heroabilities[i].level) return true;
+    return false;
+}
+
 /* Discover aura providers once per simulation frame; target checks still run
  * per unit because range, alliances, and invulnerability are live. */
 static void regen_aura_cache_update(void) {
     uint32_t const ability_generation = G_AbilityDataGeneration();
     if (regen_cache_frame == level.framenum && regen_cache_generation == ability_generation)
         return;
+    bool const fast = atoi(gi.CvarString("wc3_aura_candidates", BZ_AURA_CANDIDATES_DEFAULT));
     regen_source_count = 0;
     FOR_LOOP(i, globals.num_edicts) {
+        if (fast && !aura_has_abilities(g_edicts + i)) continue;
         regenAuraSource_t *entry = regen_sources + regen_source_count;
         abilityAliasQuery_t queries[AURA_SOURCE_QUERIES] = {
             { ID_REGEN_LIFE_ORC, &entry->life_orc },

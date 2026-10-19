@@ -21,6 +21,11 @@ uint32_t G_SelectionLimit(void) {
     return WC3_SELECTION_MAX;
 }
 #define WC3_ENEMIES_CLEAR_RADIUS 768.0f
+#ifdef __ANDROID__
+#define BZ_SELECTION_MASK_DEFAULT "1" // mode; Honor scan package +16-21% FPS; skip empty selections
+#else
+#define BZ_SELECTION_MASK_DEFAULT "0" // mode; unmeasured platforms retain the original path; 1 opts in
+#endif
 
 typedef struct {
     cstring_t name;
@@ -37,6 +42,7 @@ static cheatToggleValue_t const cheat_toggle_values[] = {
 static uint32_t selection_focus[MAX_CLIENTS];
 #ifdef BZ_TESTS
 static uint32_t test_selection_checks;
+uint32_t G_TestSelectionScans;
 void G_ResetTestSelectionChecks(void) { test_selection_checks = 0; }
 uint32_t G_GetTestSelectionChecks(void) { return test_selection_checks; }
 #define TEST_SELECTION_CHECK() test_selection_checks++
@@ -444,6 +450,11 @@ bool G_UnitCanSpendResources(gameClient_t *client, edict_t const *ent) {
 }
 
 void G_UpdateClientSelections(void) {
+    bool const fast = atoi(gi.CvarString("wc3_selection_mask", BZ_SELECTION_MASK_DEFAULT));
+    uint32_t selected = 0;
+
+    /* Summarize all players, including disconnected owners; per-recipient validation stays authoritative. */
+    if (fast) FOR_LOOP(i, globals.num_edicts) selected |= globals.edicts[i].selected;
     FOR_LOOP(i, game.max_clients) {
         gameClient_t *client = game.clients + i;
         bool changed = false;
@@ -454,6 +465,13 @@ void G_UpdateClientSelections(void) {
          * clear stale selection bits after visibility/selectability changes. */
         uint32_t count = 0;
         uint32_t const limit = G_SelectionLimit();
+        if (fast && !(selected & bit)) {
+            if (client->selection_dirty) G_SyncClientSelection(client);
+            continue;
+        }
+#ifdef BZ_TESTS
+        G_TestSelectionScans++;
+#endif
         FILTER_EDICTS(ent, ent->selected & bit) {
             if (!G_UnitCanBeSelected(client, ent)) {
                 G_DeselectEntity(client, ent);

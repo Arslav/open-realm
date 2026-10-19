@@ -2239,6 +2239,377 @@ There are no game/client API, network-message, simulation or save-layout changes
 Only the WC3 renderer native library differs in the test APK; no ordinary
 packaging pass is required.
 
+### Fresh post-merge Honor profile at native resolution (October 18)
+
+The owner requested a fresh profile after merging main and changed subsequent
+Honor measurements to **100% native render resolution**. The measured source is
+clean revision `64be2dac2d1eb328ad5ddb365a002ec55d85c6cf`. CMake's native target
+was already current; all ten installed APK libraries matched its output byte for
+byte. The existing installed APK was reused, SHA-256
+`db6ff8136541c65beda2f62114c2d7d6044fb597fe30696103c7119a792ec184`.
+There was no APK packaging/install or new engine optimization in this profile.
+
+The scene is the same mixed-army first combat, map SHA-256
+`f0e3b4523f36844843582f95a1ef64f8203048a7d64b0b4412330ce711bf81c5`,
+camera `(4600, -4600)` at distance 3000. Every capture freshly loads the map;
+the starting status shows fight tick 2 and 200 living units. Combat continues
+with real casualties. `r_particles 2`, three pose workers, packet preparation 2,
+palette UBO 2, ability/visibility queries 1 and exact sight cache 1 remain active;
+the experimental splat/submission caches remain 0. Logs confirm
+`r_render_scale 100`, a **1920x1200 drawable**, and no scaled framebuffer.
+
+Two separate 25-second FPS windows use frame/stage counters but no Simpleperf
+recording or scheduler trace:
+
+| Window | Frames / logged milliseconds | Weighted FPS | One-second range |
+| --- | --- | --- | --- |
+| First | 468 / 25680 | 18.2243 | 16.6–21.9 |
+| Repeat | 479 / 25702 | 18.6367 | 16.7–20.7 |
+| Combined | 947 / 51382 | **18.4306** | — |
+
+Combined frame time is **54.2577 ms**. End status has 164 / 167 living units at
+fight tick 30. These are a new baseline, not an optimization A/B result or a
+resolution-only comparison with historical 67% captures. Revision, combat/RNG
+and DVFS differ. No first-mission result is inferred.
+
+Two independent 20-second Simpleperf captures use `task-clock:u`, 500 Hz,
+DWARF callchains and all app threads. They record **10241 / 9774 samples with
+zero loss**. Matching app symbols come from the measured APK; every required
+build ID resolves from those symbols and existing matching platform caches.
+Private stripped Mali functions still appear as `unknown`; matching build IDs
+do not recover their private names. Percentages below are weighted **active
+userspace CPU on SDLThread**, not wall frame time. Inclusive families overlap.
+
+| CPU work | First profile | Repeat |
+| --- | --- | --- |
+| Server stage | 32.20% | 34.26% |
+| Client stage | 67.33% | 65.35% |
+| Entity simulation (`G_RunEntities`, inside server) | 18.05% | 19.18% |
+| Fog update + entity visibility queries | 7.22% | 7.87% |
+| Terrain splats, excluding driver leaves | 4.55% | 4.93% |
+| Pose preparation on owner | 5.66% | 5.18% |
+| Client snapshots/send | 5.09% | 5.32% |
+| Ability/list queries | 3.47% | 3.88% |
+| Mali driver leaf CPU | 22.31% | 20.87% |
+
+Concrete next CPU investigations, keeping driver work outside the requested scope:
+
+- The disabled `cl_debug_entities` check in `V_AddClientEntity` calls
+  `Cvar_Integer` for every entity before testing the relevant entity flag.
+  Its linear `Cvar_FindVar`/`strcmp` callsite alone accounts for **1.98 / 1.99%**
+  of main CPU. Blame identifies `b3eccac2c`, so this is not established as a
+  regression introduced by the latest merge. Moving the query out of that
+  loop or checking cheap eligibility first is a small, specific candidate.
+- Fog samples concentrate in `G_FowRevealBlockerRim`'s disk walk as well as
+  `G_FowCastLight`. Cached sight footprints do not eliminate the rim's
+  grid-dependent neighbor work. Any topology indexing or parallel version
+  must preserve temporary rim marks, commit order and current visibility;
+  the profile does not justify parallel writes to the shared grid.
+- `R_RenderRectSplatUV` costs 6.69 / 6.91% including driver leaves, but only
+  **4.55 / 4.93%** after excluding them. Clipping/geometry work can be investigated
+  independently of GL submission. The prior exact-rectangle cache remains
+  disabled and retained; a different cache needs actual hit/miss evidence.
+- Animation sampling remains material: `MDLX_SampleTrack` is about 3% main
+  self CPU and 30–33% inclusive CPU within pose workers. Existing keyframe
+  bounds are already binary searches. The three workers have similar active
+  CPU totals (1.144/1.126/1.108 s and 1.016/1.014/0.992 s), with median owner
+  wait 0.393 / 0.368 ms in FPS windows. More threads alone have no demonstrated
+  benefit here; reducing work per pose is the more specific candidate.
+- Blight datagram packing and selected-unit query families are each only
+  about **0.5–0.6%**. They are lower priority than the loops above. The separate
+  `G_BlightUpdateDestructables` simulation scan is larger (1.63 / 1.81%
+  inclusive) and must not be confused with datagram packing.
+
+A separate 20-second scheduler/EGL capture retains all **664238 events**, with
+no buffer overwrite or unmatched begin/end markers. SDLThread is running
+**75.25%**, runnable 3.33%, and blocked about 21.43%. Its 359 EGL swaps average
+12.962 ms wall time, including **11.411 ms blocked**. These spans are not GPU
+timings and do not prove that GPU cost is zero. Main execution is almost
+entirely on cores 6/7, with observed frequency changes; cached thermal status
+is 0, but that does not establish fixed clocks. Trace-derived FPS is excluded
+from the baseline.
+
+The current full suite passes **7229 test executions in 36 reports**, with no
+failures/errors/skips. Original APK/config/map/campaign/log bytes and all five
+save/checkpoint file hashes are verified after capture; absent `autoexec.cfg`
+is absent again, tracing tags are 0, and the ordinary launcher is open without
+a native game process. The durable profile archive (`$OPENREALM_EXPERIMENTS_DIR/warcraft-3/optimization-archive/native-profile-20261018/README.md`, external archive)
+contains raw samples, trace, screenshots/status, matching app symbols, reports,
+source identity and reproduction/analysis recipes. Future comparisons use this
+100% baseline rather than relabeling older measurements.
+
+### ANGLE Vulkan bridge on Honor (October 18)
+
+The owner selected ANGLE as the first whole-game Vulkan experiment and requested
+a Video settings switch. The implementation keeps the existing GLES renderer
+and shaders, dispatching them through either system EGL/GLES or app-local ANGLE.
+`r_backend gl` remains the source default; `r_backend vulkan` is selectable and
+requires an application restart. See [loading/dispatch contracts](../../renderer-backend.md#android-graphics-api-selection-through-angle)
+and [pins/import/notices](https://github.com/corepunch/open-realm/blob/main/packaging/android/angle/README.md).
+
+The initial official AOSP prebuilt (ANGLE source `3f647b1bf9a4`) was unsuitable
+on this Honor. Combat windows fell to 1.794 / 1.708 FPS, with huge particle
+triangles and disappearing/flickering ground reported by the owner and captured
+in the isolation run. The ordinary short status wait was insufficient at 2 FPS:
+some screenshots still showed the previous idle/fight status. Longer-wait
+windows reached active fight ticks 6–13 but already had casualties; retain these
+as negative diagnostics, not a strict same-phase A/B.
+
+Disabling particles removed the reproduced large triangles but barely changed
+GPU time. Disabling instancing separately reduced the old binary's static-scene
+GPU interval from roughly 350 to 75–90 ms. Original palette transport, per-model
+instance streams, persistent VAOs, disabling pose flush and bypassing the shader
+binding cache did not resolve the old slowdown. These altered-workload isolation
+stages are not acceptance FPS comparisons and do not change accepted defaults.
+
+`DIAG_OUTPUT` and `KHR_debug` identified an **Internal Vulkan error** at the
+particle draw, surfaced as `GL_INVALID_OPERATION`. The draw's VAO/VBO and range
+were valid; generated coordinates were finite. A small EGL readback using the
+production particle shader/VAO passed on native GLES and old ANGLE, so that
+simple test does not reproduce the whole-game fault. The exact internal Vulkan
+operation/result responsible for the legacy failure is still unidentified.
+
+Replacing only the ANGLE libraries with those from the official Android 35
+ARM64 default image revision 2 passes that same diagnostic scenario without
+the GL/KHR error. The newer libraries report Mali hardware Vulkan 1.1.177 and
+an unknown embedded ANGLE git hash. Their image fingerprint and byte hashes are
+the identity; this is not a current-upstream or native-Vulkan performance claim.
+The temporary per-frame geometry dump is archived and removed from the working
+render loop. The owner subsequently confirms that ground flicker is absent in
+the final new-ANGLE scene; captured frames also no longer show the huge triangles.
+
+The first same-APK G/V/V/G series uses the current 100% policy: 1920x1200
+drawable, no scaled framebuffer, 200 mixed starting units, first real combat,
+fixed 4600/-4600 camera at distance 3000, full particles/effects, three pose
+workers, packet mode 2 and 1024-matrix UBO packets. Ability/visibility/sight
+caches remain enabled; submission/splat experiments remain off. Each window is
+25 seconds in a fresh process/map, without builds or profilers overlapping it:
+
+| Backend | Completed windows, FPS | Weighted combined FPS |
+|---|---|---:|
+| System GLES | 18.324 / 18.122 | 18.225 |
+| SDK35 ANGLE / Vulkan | 17.364 / 19.920 | 18.631 |
+
+The 2.23% combined difference is small compared with Vulkan's window spread;
+it does not establish a sustained gain or justify changing the default. The
+first and second Vulkan windows also differ in server time per main loop
+(15.62 vs 12.66 ms), not just render time. Cache/pipeline warmup or device clocks
+may contribute, but this comparison does not isolate their causes. A later
+check of the final test APK gives GLES **18.066 / 18.310**, combined **18.186**,
+and Vulkan **17.427 / 17.565**, combined **17.495 FPS** (-3.80%). Its runtime
+and current library identity are recorded separately. Both complete series
+remain evidence: the bridge has no demonstrated performance advantage on this
+workload, despite correcting the failed legacy path.
+
+A separate `r_profile 2` combat window reports **29 valid GPU samples**, weighted
+elapsed interval **34.479 ms**, zero invalid/disjoint/busy. This spans submitted
+commands, including bubbles/synchronization; it is not utilization or isolated
+GPU pass execution. An earlier attempted GPU capture accidentally passed the
+Android `profile=1` intent over its autoexec setting and generated no GPU rows;
+it remains explicitly marked unusable for GPU timing. Do not mix either
+diagnostic window into the unprofiled comparison above.
+
+The full suite passes **7233 executions in 36 JUnit reports** plus five pinned
+ANGLE import tests, with no failures/errors/skips. Android instrumentation
+passes imports, runtime module loading, startup/backend argument isolation,
+four native smoke tests and clean native exit. GLES-only and ANGLE-enabled
+native renderers compile, and WC3/WoW/SC2 consumers are rebuilt. Device menu
+selection, saved restart behavior and framebuffer output are checked separately
+from headless tests. The retained trial (`$OPENREALM_EXPERIMENTS_DIR/warcraft-3/optimization-archive/vulkan-backend-20261018/README.md`, external archive)
+contains pins/recipes for both library variants, exact source reconstruction context, every
+completed/failed diagnostic window, screenshots, counters and restoration proof.
+
+### Durotar opening mission profile at native resolution (October 18)
+
+The owner reports 10–11 FPS during both the opening cinematic and gameplay of
+The Founding of Durotar. The measured map is
+`Maps/FrozenThrone/Campaign/OrcX01.w3x`. Its local retail placement files contain
+258 unit/item records and 8710 doodad/destructable records; these are authored
+placements, not a measured live-edict count. The large scenery population makes
+this a different CPU workload from the 200-unit mixed-army benchmark.
+
+The existing APK is reused without a build or installation: SHA-256
+`b6d7ce4bbec6eba356603c588f1f49dbe5bc98421901938d9daa329ff5c7c659`.
+All ten native modules match current CMake outputs; both ANGLE libraries match
+the selected SDK35 pins. Source is `64be2dac` plus the retained Vulkan implementation
+above. The initial device log/config selects GLES, so captures explicitly select
+each API and verify its actual `GL_RENDERER`. Every run verifies
+`r_render_scale 100`, a **1920x1200 drawable**, and no scaled framebuffer.
+
+Six independent fresh-map runs separate FPS counters, CPU sampling, GPU queries
+and scheduler traces. Intro recording starts about 8 seconds after observed
+`G_ClientBegin`, following the authored moving camera. Gameplay uses
+`cinematic stop` and the map's `EVENT_PLAYER_END_CINEMATIC` handler, waits ten
+seconds, then records the authored starting view with Rexxar and Misha. No
+fast-forward, test-army substitution or gameplay pause is used. Captured images
+confirm the cinematic/HUD transition. This skips the remainder of the intro;
+it does not measure a later quest or the entire natural intro playback.
+
+Each FPS window lasts 25 seconds, with existing CPU/counter diagnostics enabled
+but without Simpleperf, GPU queries or scheduler tracing:
+
+| Phase | System GLES | ANGLE / Vulkan |
+|---|---:|---:|
+| Opening cinematic | **10.806 FPS** | **10.663 FPS** |
+| Gameplay starting view | **10.405 FPS** | **11.104 FPS** |
+
+These are single windows per phase/API, not a statistically established speedup
+or smoothness comparison. The reported slowdown reproduces on both backends.
+Server wall time averages **50.26–59.44 ms per main loop** across these windows;
+client wall time is **34.94–43.37 ms**. These include their nested work/waits
+and must not be added to separate asynchronous GPU durations.
+
+Four 20-second, 500-Hz `task-clock:u` DWARF profiles cover both phases on both
+APIs: **36,919 samples, zero loss**. Every required shared-library build ID
+resolves using installed-APK symbols and exact matching platform caches.
+Private/stripped driver internals remain unnamed. Percentages below are weighted
+active main-thread userspace CPU, not fractions of wall frame time; inclusive
+families overlap:
+
+| Main CPU family | Vulkan intro | Vulkan gameplay | GLES gameplay |
+|---|---:|---:|---:|
+| Server stage | 63.96% | 64.87% | 66.28% |
+| Entity simulation | 31.48% | 37.76% | 36.90% |
+| Visibility query | 8.78% | 11.24% | 11.00% |
+| Vertex-tint preparation, including visibility | 7.65% | 8.47% | 8.35% |
+| Aura cache | 7.53% | 7.88% | 7.68% |
+| Status updates | 6.86% | 7.42% | 7.35% |
+| Selection sweep | 5.76% | 6.17% | 8.17% |
+
+Specific next candidates, grounded in source and samples:
+
+- `G_RunEntities` sends every live edict through `G_RunEntity`, which calls
+  `spell_run_frame` and `unit_updatestatuses` before its world-active test.
+  Status processing scans 16 slots even when none are active. Investigate an
+  exact empty-status fast path or an active-status set, retaining expiry,
+  dispel, hidden/paused units and save/load semantics. Do not simply stop
+  simulation for off-camera units.
+- `regen_aura_cache_update` already caches within a server frame, but rebuilds
+  across `globals.num_edicts` on each new frame, preparing alias queries even
+  for entries that cannot emit an aura. Candidate/source indexing and precise
+  lifecycle invalidation are more specific than adding more animation workers.
+- `G_UpdateClientSelections` walks the full entity array for every
+  `game.max_clients` slot. Inspect connected-client eligibility and the selected
+  set while preserving stale-bit cleanup and selection-limit changes.
+- `G_WriteClientDatagram` tests presentation tint across the full array;
+  `G_ClientVertexColor` performs visibility checks before rejecting ordinary
+  white/opaque entries. Indexing actual tint/fade candidates can avoid repeated
+  visibility work while retaining authored tint and invisibility presentation.
+- The disabled `cl_debug_entities` check inside `V_AddClientEntity` still does a
+  linear cvar lookup per submitted entity. Its `strcmp` callsite alone costs
+  **6.10% / 5.75%** of Vulkan intro/gameplay main CPU, with additional lookup
+  instructions outside that estimate. `git blame` identifies `b3eccac2c`;
+  selection, tint and status scans also predate this Vulkan work. These are
+  existing costs, not established Vulkan regressions.
+
+Pose workers consume only **0.114 / 0.056 CPU seconds across the separate
+20-second Vulkan intro/gameplay recordings** (0.65% / 0.32% of all sampled app
+userspace CPU). Their small workload does not support prioritizing additional
+bone-preparation threads for this mission.
+
+Separate Vulkan GPU-query windows contain 16 valid samples each, with weighted
+elapsed intervals **64.705 / 68.705 ms**, zero invalid/disjoint/busy. The GPU
+queue is therefore not established as negligible here. These intervals include
+bubbles/synchronization; they are not utilization or isolated raster-pass cost.
+
+Two separate 20-second Vulkan scheduler traces retain all **531012 / 553868
+events** without buffer overwrite. The main SDL thread is running **82.25% /
+83.35%**, blocked about **14.95% / 14.98%**, runnable 1.62% / 1.68%. The intro
+has a 235-ms initially unknown scheduling interval and four unmatched end
+markers confined to the initial trace boundary; there are no unfinished spans.
+This ANGLE emits no `eglSwapBuffers` span. One main-thread `QueuePresentKHR`
+per rendered frame supplies API-call pacing: median **79.52 / 85.37 ms**, p95
+**194.71 / 173.44 ms**. These traced intervals are not physical display-present
+timestamps or an uninstrumented smoothness comparison with GLES. Present calls
+contain about 2.97 seconds of the main thread's blocked time in each trace;
+the trace does not identify isolated GPU execution from that blocking.
+
+The Durotar profile archive (`$OPENREALM_EXPERIMENTS_DIR/warcraft-3/optimization-archive/durotar-profile-20261018/README.md`, external archive)
+retains every window/profile/trace, matching app symbols, reports, source/history
+identity and capture/analysis recipes. This task changes no runtime code, API,
+network or save format. Fresh original settings/log/campaign bytes and all five
+save/checkpoint hashes are restored and verified; the existing APK remains
+installed, tracing is off and the ordinary launcher is reopened.
+
+### LAN-safe server scan package on Durotar (October 18)
+
+The owner requested server optimization while preserving future LAN support.
+The implementation remains entirely in the WC3 game module and preserves the
+server tick, per-player authority, entity simulation, RNG, network wire layout
+and save format. It adds no worker threads or camera-dependent simulation.
+Three independent cvars retain the original paths:
+
+- `wc3_selection_mask`: summarize selected-player bits once, then avoid full
+  entity walks for players with no selected bits. Dirty empty selections still
+  synchronize. Disconnected players with retained selections still undergo the
+  same validation; this is not a local-player or connected-only shortcut.
+- `wc3_tint_fast`: evaluate whether an entity needs a tint before expensive
+  visibility filtering. Owner/shared-vision fading and invisibility remain
+  recipient-specific, with a stack-owned query context per datagram. Explicit
+  alpha-zero, Hero dissipation and hostile visibility keep identical wire bytes.
+- `wc3_aura_candidates`: before constructing all aura queries, skip entities
+  with no native ability list, script-added abilities or learned Hero ability.
+  Discovery still follows the whole world in edict order every server frame;
+  live range/alliance checks and the existing two-second aura refresh remain.
+  No cross-frame membership cache or new serialized entity field is introduced.
+
+An initial RED run has nine expected work-count failures while behavior/wire
+assertions pass. The expanded suite has 73 passing assertions across three
+new tests in both debug and optimized host builds, exercising the actual game
+scheduler, non-local player numbers 2/5, disconnected owner 9, selection clearing,
+owner/ally/enemy tint snapshots, lost shared vision, fog changes, explicit alpha
+zero, Hero dissipation, and native/script/Hero aura sources with both ability-list
+modes. The fresh baseline full suite passes 7233 executions; after the changes,
+7239 pass in 36 JUnit reports plus five ANGLE import tests. Initial host attempts
+needed the existing SDL prefix and local-UDP sandbox access; those environment
+failures are retained separately from the verified passing baseline.
+
+Only the game native library changes in the prototype test APK, SHA-256
+`d2053dbe7b7a97bb6d2688486cdcb86d2a785fc261b66049599b5a28ffa2575d`.
+The APK's original signing certificate, other eleven native libraries and assets
+are retained. Four fresh-process/map runs use one APK in **A/B/B/A** order,
+all three options 0 versus 1, Vulkan through the selected SDK35 ANGLE, **100%
+1920x1200 native render**, full quality/effects and the same OrcX01 intro/
+starting-gameplay capture recipe as the preceding profile. Each phase records
+25 seconds of counters without CPU sampling, GPU queries, scheduler tracing
+or concurrent host builds. Camera/timer/RNG/DVFS variation remains a limitation.
+
+| Phase | Original windows, FPS | Optimized windows, FPS | Weighted original → optimized |
+|---|---|---|---|
+| Intro | 10.559 / 10.707 | 12.794 / 12.937 | **10.634 → 12.866 (+20.99%)** |
+| Gameplay | 10.731 / 10.358 | 11.882 / 12.604 | **10.548 → 12.246 (+16.09%)** |
+
+Server wall work per main loop falls **53.039 → 33.903 ms** in the intro and
+**56.443 → 41.156 ms** in gameplay. Wall work per elapsed second falls
+**564.031 → 436.066 ms** and **595.827 → 503.945 ms** respectively. Per-loop
+values also reflect changed render/tick cadence; they are not isolated function
+execution times. The measured claim is for the combined package. Individual
+switch gains have not been isolated, and no first-mission 40-FPS result or
+physical multi-device LAN session is claimed.
+
+All three options now default to **1 on Android**, 0 on unmeasured platforms;
+explicit 0 retains each original path. The final test APK is
+`ec60c8fd4cea8faae239e8b966e29136facb41c303d63d295de6a5301a5b041f`.
+Its follow-up only activates these defaults and formats the local query
+initializer; the measured prototype source is frozen separately.
+A separate fresh final-APK run omits all three overrides and records **12.645 FPS
+intro / 12.612 FPS gameplay**. This validates default activation, not another
+paired A/B claim. Original config does not define these new options.
+
+Two separate optimized-prototype CPU recordings retain **7971 / 8436 samples,
+zero loss**, with all required shared-library build IDs resolved. Server CPU
+shares are 54.93% intro / 61.10% gameplay. Aura discovery is 2.90% / 3.35%,
+visibility queries 3.41% / 4.45%, selection cleanup 0.40% / 4.73%, and status
+updates 6.68% / 6.71%. These diagnostic recordings are not same-APK CPU A/B
+with the preceding profile; inclusive shares overlap and must not be added.
+Selection work remains material in gameplay, as do status/physics/spatial-query
+families. More animation workers are not the measured next server target.
+
+The complete server scan trial (`$OPENREALM_EXPERIMENTS_DIR/warcraft-3/optimization-archive/server-work-20261018/README.md`, external archive)
+retains reference/prototype/final sources, the complete patch/context, tests,
+all phase captures and package/source identity. Failed and disabled paths remain
+available. The owner’s future-LAN constraint is also recorded in AGENTS.md.
+
 ### Ability, visibility and splat CPU work (October 18)
 
 Following the larger-packet profile, three independent switches preserve the

@@ -1,6 +1,21 @@
 #include "g_local.h"
 #include "games/warcraft-3/common/weather.h"
 
+#ifdef __ANDROID__
+#define BZ_TINT_FAST_DEFAULT "1" // mode; Honor scan package +16-21% FPS; defer unused tint visibility
+#else
+#define BZ_TINT_FAST_DEFAULT "0" // mode; unmeasured platforms retain the original path; 1 opts in
+#endif
+
+typedef struct {
+    gameClient_t const *client;
+    bool fast;
+} tintQuery_t;
+
+#ifdef BZ_TESTS
+uint32_t G_TestTintVisibilityChecks;
+#endif
+
 static bool G_WeatherValid(gweather_t const *effect) {
     return effect && effect >= level.weather_effects &&
            effect < level.weather_effects + MAX_WEATHER_EFFECTS && effect->inuse;
@@ -57,7 +72,7 @@ void G_WeatherInitMap(void) {
  * remains unit state. Hero dissipation fades for every viewer; Shadow Meld and
  * invisibility additionally multiply only owner/shared-vision presentation so
  * hostile detector viewers retain the normal authored tint. */
-static bool G_ClientVertexColor(edict_t *client_ent, edict_t const *unit, color32_t *out) {
+static bool G_ClientVertexColor(tintQuery_t const *query, edict_t const *unit, color32_t *out) {
     uint32_t player;
     color32_t color;
     float presentation_alpha = 1.0f;
@@ -66,9 +81,14 @@ static bool G_ClientVertexColor(edict_t *client_ent, edict_t const *unit, color3
     color = unit->vertex_color_set ? unit->vertex_color : COLOR32_WHITE;
     presentation_alpha = G_UnitDissipatePresentationAlpha(unit);
 
-    if (client_ent && client_ent->client) {
-        player = client_ent->client->ps.number;
-        if (unit->s.player != player && !G_FowPlayerCanSeeEntity(player, unit)) return false;
+    if (query->client) {
+        player = query->client->ps.number;
+        if (!query->fast && unit->s.player != player) {
+#ifdef BZ_TESTS
+            G_TestTintVisibilityChecks++;
+#endif
+            if (!G_FowPlayerCanSeeEntity(player, unit)) return false;
+        }
         if (unit->s.player == player || G_FowPlayersShareVision(player, unit->s.player)) {
             float ghost_alpha = S_ShadowMeldPresentationAlpha(unit);
             if (S_UnitHasInvisibilityState(unit)) ghost_alpha = MIN(ghost_alpha, 0.35f);
@@ -77,6 +97,13 @@ static bool G_ClientVertexColor(edict_t *client_ent, edict_t const *unit, color3
     }
 
     if (!unit->vertex_color_set && presentation_alpha >= 1.0f) return false;
+    /* Ordinary opaque entries need no tint packet; keep visibility filtering separate for every LAN recipient. */
+    if (query->fast && query->client && unit->s.player != query->client->ps.number) {
+#ifdef BZ_TESTS
+        G_TestTintVisibilityChecks++;
+#endif
+        if (!G_FowPlayerCanSeeEntity(query->client->ps.number, unit)) return false;
+    }
     color.a = (uint8_t)MIN(255, MAX(0, (int)((float)color.a * presentation_alpha + 0.5f)));
     *out = color;
     return true;
@@ -84,6 +111,9 @@ static bool G_ClientVertexColor(edict_t *client_ent, edict_t const *unit, color3
 
 /* Serialize authoritative weather and vertex-colour state so dropped frames converge without widening entityState_t. */
 uint32_t G_WriteClientDatagram(edict_t *ent, uint8_t *data, uint32_t size) {
+    tintQuery_t const query = {
+        .client = ent ? ent->client : NULL, .fast = atoi(gi.CvarString("wc3_tint_fast", BZ_TINT_FAST_DEFAULT))
+    };
     uint32_t weather_count = 0, lightning_count = 0, tint_count = 0, terrain_mask_size = 0;
     uint32_t const tint_wire_size = sizeof(uint16_t) + sizeof(color32_t);
     uint32_t const lightning_header_size = sizeof(uint16_t);
@@ -107,7 +137,7 @@ uint32_t G_WriteClientDatagram(edict_t *ent, uint8_t *data, uint32_t size) {
     }
     FOR_LOOP(i, globals.num_edicts) {
         color32_t color;
-        if (G_ClientVertexColor(ent, &g_edicts[i], &color)) tint_count++;
+        if (G_ClientVertexColor(&query, &g_edicts[i], &color)) tint_count++;
     }
     base = sizeof(wire_count) + weather_count * sizeof(wc3WeatherEffect_t);
     lightning_need = lightning_header_size + lightning_count * sizeof(lightningEffect_t);
@@ -158,7 +188,7 @@ uint32_t G_WriteClientDatagram(edict_t *ent, uint8_t *data, uint32_t size) {
             edict_t *unit = &g_edicts[i];
             uint16_t number;
             color32_t color;
-            if (!G_ClientVertexColor(ent, unit, &color)) continue;
+            if (!G_ClientVertexColor(&query, unit, &color)) continue;
             number = (uint16_t)unit->s.number;
             memcpy(out, &number, sizeof(number)); out += sizeof(number);
             memcpy(out, &color, sizeof(color)); out += sizeof(color);

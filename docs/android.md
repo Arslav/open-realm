@@ -715,7 +715,7 @@ drawable and no scaled framebuffer. Two separate FPS windows yield 18.224 /
 sample loss; a separate scheduler trace is complete. These measurements are a
 new baseline, not an A/B result against an older revision at 67%. Original
 settings, campaign/map/log bytes and all save/checkpoint hashes are restored;
-no packaging or install is needed. See the fresh profile and CPU targets (`games/warcraft-3/performance.md#fresh-post-merge-honor-profile-at-native-resolution-october-18`; section follows in this series)
+no packaging or install is needed. See the [fresh profile and CPU targets](games/warcraft-3/performance.md#fresh-post-merge-honor-profile-at-native-resolution-october-18)
 and raw evidence/recipes (`$OPENREALM_EXPERIMENTS_DIR/warcraft-3/optimization-archive/native-profile-20261018/README.md`, external archive).
 See [contracts, all windows and CPU evidence](games/warcraft-3/performance.md#ability-visibility-and-splat-cpu-work-october-18)
 and the complete retained trial (`$OPENREALM_EXPERIMENTS_DIR/warcraft-3/optimization-archive/cpu-work-families-20261018/README.md`, external archive).
@@ -757,16 +757,16 @@ The first AOSP ANGLE trial had huge particle triangles, disappearing terrain,
 internal Vulkan errors and roughly 2 FPS in combat. Switching only its app-local
 ANGLE libraries to the pinned SDK35 binaries removes the reproduced GL error
 and restores performance near GLES. This does not establish a major speedup or
-40 FPS. See measurements and limitations (`games/warcraft-3/performance.md#angle-vulkan-bridge-on-honor-october-18`; section follows in this series)
+40 FPS. See [measurements and limitations](games/warcraft-3/performance.md#angle-vulkan-bridge-on-honor-october-18)
 and the complete retained trial (`$OPENREALM_EXPERIMENTS_DIR/warcraft-3/optimization-archive/vulkan-backend-20261018/README.md`, external archive).
 
-The subsequent Durotar opening profile (`games/warcraft-3/performance.md#durotar-opening-mission-profile-at-native-resolution-october-18`; section follows in this series)
+The subsequent [Durotar opening profile](games/warcraft-3/performance.md#durotar-opening-mission-profile-at-native-resolution-october-18)
 reproduces 10–11 FPS at 100% native resolution on both GLES and Vulkan. Four
 CPU recordings identify map-wide simulation, visibility/tint and selection
 scans; GPU and scheduler windows are recorded separately. See the
 raw profiles and recipes (`$OPENREALM_EXPERIMENTS_DIR/warcraft-3/optimization-archive/durotar-profile-20261018/README.md`, external archive).
 
-The subsequent server scan changes (`games/warcraft-3/performance.md#lan-safe-server-scan-package-on-durotar-october-18`; section follows in this series)
+The subsequent [server scan changes](games/warcraft-3/performance.md#lan-safe-server-scan-package-on-durotar-october-18)
 retain LAN-recipient semantics and improve the same 100%-native OrcX01
 intro/gameplay by 20.99% / 16.09% in a same-APK A/B/B/A comparison. Android
 defaults enable `wc3_selection_mask`, `wc3_tint_fast` and

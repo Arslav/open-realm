@@ -310,7 +310,7 @@ blend/depth bits) waits until draws are no longer immediate.
 ## Vulkan feasibility on Honor (October 18, 2026)
 
 The owner's Vulkan question was assessed against the
-fresh native-resolution profile (`games/warcraft-3/performance.md#fresh-post-merge-honor-profile-at-native-resolution-october-18`; section follows in this series)
+[fresh native-resolution profile](games/warcraft-3/performance.md#fresh-post-merge-honor-profile-at-native-resolution-october-18)
 and the actual Honor device. Read-only commands, without restarting the game:
 
 ```sh
@@ -429,7 +429,7 @@ authored-anchor tests, transactional dispatch tests, pinned-import rejection
 tests, all game build consumers, Android instrumentation, and device UI/scene
 checks. Native GLES-only and ANGLE-enabled renderer builds both link without a
 system GL dependency. Performance conclusions and their scene/variance limits
-are in WC3 performance (`games/warcraft-3/performance.md#angle-vulkan-bridge-on-honor-october-18`; section follows in this series).
+are in [WC3 performance](games/warcraft-3/performance.md#angle-vulkan-bridge-on-honor-october-18).
 
 ## Key constraints
 
