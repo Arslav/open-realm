@@ -1468,12 +1468,10 @@ void jass_setnull(jassVar_t *var) {
     if (!var || !var->type) {
         return;
     }
+    /* Types are VM-owned pointers. Numeric address limits reject valid ARM64
+     * tagged heap pointers and silently erase declared handle types. */
     uintptr_t typeaddr = (uintptr_t)var->type;
-    bool invalid_type_address = (typeaddr & (sizeof(void *) - 1)) || typeaddr < 4096;
-#if UINTPTR_MAX > 0x0000800000000000ULL
-    invalid_type_address = invalid_type_address || typeaddr >= 0x0000800000000000ULL;
-#endif
-    if (invalid_type_address) {
+    if ((typeaddr & (sizeof(void *) - 1)) || typeaddr < 4096) {
         memset(var, 0, sizeof(*var));
         return;
     }

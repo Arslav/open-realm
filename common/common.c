@@ -1837,7 +1837,7 @@ static void Com_Test_f(void) {
     cstring_t arg = Cmd_Argc() > 1 ? Cmd_Argv(1) : "*";
     snprintf(pattern, sizeof(pattern), "%s", arg);
     int failures = Test_Run(pattern);
-    exit(failures ? 1 : 0);
+    Sys_Exit(failures ? 1 : 0);
 }
 
 void Com_Init(int argc, cstring_t *argv) {
