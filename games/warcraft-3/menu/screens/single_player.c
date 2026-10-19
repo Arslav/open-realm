@@ -802,6 +802,39 @@ static bool SinglePlayer_ShowMission(singlePlayerCampaign_t const *campaign, uin
     return mission_index == 0 && SinglePlayer_ShowCampaign(campaign);
 }
 
+#ifdef BZ_FFMPEG
+static void SinglePlayer_MovieAssetPath(cstring_t movie, string_t out, uint32_t out_size);
+
+/* Match NightElf07 / UndeadX08's SetNextLevelBJ destinations. MiscUI.CreditsFile
+ * selects the separate regular menu credits, not the post-campaign scenes. */
+static void SinglePlayer_PlayFinaleMovie(cstring_t movie) {
+    mi.PlayMovieBeforeMap(movie, SinglePlayer_ExpansionEnabled()
+                         ? "Maps\\FrozenThrone\\Campaign\\War3XBonusCredits.w3x"
+                         : "Maps\\Campaign\\BonusCredits.w3m");
+}
+#endif
+
+static bool SinglePlayer_IsModelCinematic(cstring_t path) {
+    cstring_t extension = strrchr(path, '.');
+    return extension && (!strcasecmp(extension, ".mdl") || !strcasecmp(extension, ".mdx"));
+}
+
+#ifdef BZ_FFMPEG
+static bool SinglePlayer_EndingHasCredits(singlePlayerCampaign_t const *campaign) {
+    if (campaign->num_missions &&
+        SinglePlayer_IsModelCinematic(campaign->missions[campaign->num_missions - 1].map_path))
+        return true;
+    /* BZ_COMPAT_GUESS: replay the edition finale with credits. CampaignStrings
+     * orders campaigns; trailing bonus campaigns need not have an ending movie. */
+    for (uint32_t i = campaign_order_count; i > 0; i--) {
+        singlePlayerCampaign_t const *last = &campaigns[campaign_order[i - 1]];
+        if (last->cinematics[SINGLE_PLAYER_CINEMATIC_END].movie_path[0])
+            return last == campaign;
+    }
+    return false;
+}
+#endif
+
 static void SinglePlayer_LaunchMission(singlePlayerCampaign_t const *campaign, uint32_t mission_index) {
     char command[MAX_PATHLEN + 7];
     cstring_t map_path;
@@ -809,6 +842,29 @@ static void SinglePlayer_LaunchMission(singlePlayerCampaign_t const *campaign, u
     if (!campaign || mission_index >= campaign->num_missions) return;
     map_path = campaign->missions[mission_index].map_path;
     if (!map_path[0]) return;
+    /* Numbered campaign entries can author a model scene, not a loadable map. */
+    if (SinglePlayer_IsModelCinematic(map_path)) {
+        mi.QueueModelCinematic(map_path);
+#ifdef BZ_FFMPEG
+        /* A final model entry continues into the campaign's authored ending movie. */
+        if (mission_index + 1 == campaign->num_missions &&
+            campaign->cinematics[SINGLE_PLAYER_CINEMATIC_END].movie_path[0]) {
+            PATHSTR movie;
+            SinglePlayer_MovieAssetPath(campaign->cinematics[SINGLE_PLAYER_CINEMATIC_END].movie_path, movie, sizeof(movie));
+            SinglePlayer_PlayFinaleMovie(movie);
+        }
+#endif
+        return;
+    }
+#ifdef BZ_FFMPEG
+    /* The opening is a prelude to a fresh first mission; replay rows stay independent. */
+    if (!mission_index && campaign->cinematics[SINGLE_PLAYER_CINEMATIC_OPEN].movie_path[0]) {
+        PATHSTR movie;
+        SinglePlayer_MovieAssetPath(campaign->cinematics[SINGLE_PLAYER_CINEMATIC_OPEN].movie_path, movie, sizeof(movie));
+        mi.PlayMovieBeforeMap(movie, map_path);
+        return;
+    }
+#endif
     snprintf(command, sizeof(command), "map \"%s\"", map_path);
     UI_QueueCommand(command);
 }
@@ -1041,7 +1097,8 @@ static void SinglePlayer_FillMissionRows(singlePlayerCampaign_t const *campaign)
                 ? mission_completion_names[i]
                 : (campaign->missions[index].name[0] ? campaign->missions[index].name : name);
         }
-        SinglePlayer_AddListEntry(&mission_rows, i, cinematic, header, name);
+        SinglePlayer_AddListEntry(&mission_rows, i,
+                                 cinematic || SinglePlayer_IsModelCinematic(mission_list.items[i].path), header, name);
         if (cinematic && index == SINGLE_PLAYER_CINEMATIC_INTRO && i + 1 < mission_list.count)
             SinglePlayer_AddListEntry(&mission_rows, UINT32_MAX, false, NULL, NULL);
     }
@@ -1308,7 +1365,12 @@ void SinglePlayerMenu_LaunchMissionIndex(uint32_t index) {
     item_flags = mission_list.items[index].flags;
 #ifdef BZ_FFMPEG
     if (item_flags & SINGLE_PLAYER_LIST_FLAG_CINEMATIC) {
-        mi.PlayMovie(mission_list.items[index].path);
+        if ((item_flags & SINGLE_PLAYER_LIST_INDEX_MASK) == SINGLE_PLAYER_CINEMATIC_END &&
+            SinglePlayer_EndingHasCredits(campaign)) {
+            SinglePlayer_PlayFinaleMovie(mission_list.items[index].path);
+        } else {
+            mi.PlayMovie(mission_list.items[index].path);
+        }
         return;
     }
 #endif

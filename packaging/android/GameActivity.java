@@ -9,7 +9,8 @@ import org.libsdl.app.SDLActivity;
 /** SDL owns the native thread and lifecycle; game logic remains in its own library. */
 public class GameActivity extends SDLActivity {
     static String[] libraries() {
-        return new String[] { "SDL2", "realm_shared", "realm_sheet", "realm_jass", "realm_renderer",
+        return new String[] { "SDL2", "avutil", "swresample", "swscale", "avcodec", "avformat",
+            "realm_shared", "realm_sheet", "realm_jass", "realm_renderer",
             "realm_game", "realm_menu", "warcraft3" };
     }
     @Override protected String[] getLibraries() {
@@ -49,6 +50,9 @@ public class GameActivity extends SDLActivity {
         }
         int frames = intent.getIntExtra("frames", 0);
         String map = intent.getStringExtra("map");
+        String movie = intent.getStringExtra("movie");
+        if (!smoke && movie != null && movie.matches("[A-Za-z0-9_-]+"))
+            args.addAll(Arrays.asList("+set", "cl_start_menu", "", "+playmovie", movie));
         if (credits && map == null) map = "Maps/FrozenThrone/Campaign/War3XRegularCreditsIce.w3x";
         if (map != null && map.matches("[A-Za-z0-9_./\\\\ ()-]+"))
             args.addAll(Arrays.asList("+map", map));

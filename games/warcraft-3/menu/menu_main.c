@@ -25,6 +25,7 @@ menuImport_t mi;
 typedef struct {
     bool initialized;
     bool active;
+    bool startup_movie_attempted;
     uint32_t time;
     vec2_t mouse_fdf;
     uiScreen_t *transition_screen;
@@ -221,7 +222,22 @@ BZ_HOST_HIDDEN void M_ShowMainMenu(void) {
         if (mi.Online_Leave) mi.Online_Leave();
         if (mi.Cvar_Set) mi.Cvar_Set("online_mode", "0");
     }
-    UI_RequestScreen(&mainMenuScreen, mainMenuScreen.glue, MainMenu_ShowMainPanel);
+    if (!UI_RequestScreen(&mainMenuScreen, mainMenuScreen.glue, MainMenu_ShowMainPanel)) return;
+#ifdef BZ_FFMPEG
+    /* Start only after client/menu initialization, once per edition. Failed playback
+     * leaves the archived bit clear so importing Movies can repair the next start. */
+    if (ui_state.initialized && !ui_state.startup_movie_attempted) {
+        ui_state.startup_movie_attempted = true;
+        uint32_t seen = (uint32_t)strtoul(mi.Cvar_String("wc3_intro_seen", "0"), NULL, 10);
+        uint32_t edition = atoi(mi.Cvar_String("fs_expansion", "0")) ? 2u : 1u;
+        if (!(seen & edition) && !*mi.Cvar_String("map", "") && !*mi.Cvar_String("connect", "") &&
+            mi.PlayMovie(edition == 2 ? "Movies\\IntroX.mpq" : "Movies\\TutorialIn.mpq")) {
+            char value[16];
+            snprintf(value, sizeof(value), "%u", seen | edition);
+            mi.Cvar_Set("wc3_intro_seen", value);
+        }
+    }
+#endif
 }
 
 void M_ShowSinglePlayerMenu(void) {
@@ -366,8 +382,12 @@ static void UI_UpdateMouseFrameFlags(frameDef_t const *hit, bool clear_pressed) 
 void M_Init(void) {
     /* Register before any campaign view is opened, including sessions launched
      * directly into a map. Cvar_Get preserves previously loaded user values. */
-    if (mi.Cvar_Register)
+    if (mi.Cvar_Register) {
+#ifdef BZ_FFMPEG
+        mi.Cvar_Register("wc3_intro_seen", "0", CVAR_ARCHIVE);
+#endif
         mi.Cvar_Register(WC3_CAMPAIGN_DIFFICULTY_CVAR, WC3_CAMPAIGN_DIFFICULTY_DEFAULT, CVAR_ARCHIVE);
+    }
     UI_SetCameraEventRelease(M_ReleaseCameraEventInstance);
     memset(&ui_state, 0, sizeof(ui_state));
     UI_ResetGlueSceneModels();

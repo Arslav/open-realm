@@ -1,0 +1,15 @@
+ID;PWXL;N;E
+B;X4;Y3;D0
+C;X1;Y1;K"SoundName"
+C;X2;K"FileNames"
+C;X3;K"DirectoryBase"
+C;X4;K"Volume"
+C;X1;Y2;K"TestSceneTrack"
+C;X2;K"alternate-scene.mp3"
+C;X3;K"Sound\Cinematic"
+C;X4;K63.5
+C;X1;Y3;K"FinalCinematic"
+C;X2;K"FinalCinematic.mp3"
+C;X3;K"Sound\Ambient\DoodadEffects\"
+C;X4;K127
+E

@@ -728,6 +728,14 @@ static void CL_QueueCinematic(cstring_t path, bool model) {
 void CL_QueueMovie(cstring_t path) { CL_QueueCinematic(path, false); }
 void CL_QueueModelCinematic(cstring_t path) { CL_QueueCinematic(path, true); }
 
+/* A menu-authored prelude uses the same deferred session boundary as a game ending. */
+static void CL_PlayMovieBeforeMap(cstring_t path, cstring_t map) {
+    PATHSTR resolved;
+    if (!map || !*map || !Com_ResolveMapArgument(map, resolved, sizeof(resolved))) return;
+    MenuAction("map", resolved);
+    CL_QueueMovie(path);
+}
+
 /* The client owns the session pause and deferred transition. A presentation
  * renderer may only start/stop its own asset, never change the game session. */
 static void CL_CancelCinematicSession(void) {
@@ -740,16 +748,16 @@ static void CL_CancelCinematicSession(void) {
     cl_cinematic_previous_pause = false;
 }
 
-static bool CL_HasModelCinematic(void) {
+static bool CL_HasStandaloneCinematic(void) {
     FOR_LOOP(i, cl_cinematic_queue_count)
         if (cl_cinematic_queue[i].model) return true;
     return false;
 }
 
 static bool CL_CanStartCinematic(bool transition_pending) {
-    /* Model scenes may run standalone. Movie files are transition interposers
-     * and must not interrupt the map's remaining scripted ending. */
-    return transition_pending || CL_HasModelCinematic();
+    /* Model scenes can play standalone. Movie files wait for a transition
+     * so they cannot interrupt a map's scripted ending. */
+    return transition_pending || CL_HasStandaloneCinematic();
 }
 
 /* A model ending scene precedes an unlock movie queued earlier by
@@ -818,6 +826,7 @@ TEST(client_cinematic, queue_capacity_never_discards_existing_scenes) {
     }
     T_ASSERT(!CL_PopCinematic(path, &model, true));
 }
+
 #endif
 
 static void CL_ProcessPendingMenuAction(void) {
@@ -962,6 +971,27 @@ TEST(client_session, menu_action_map_is_deferred_until_client_frame) {
     memset(&cl_pending_menu_action, 0, sizeof(cl_pending_menu_action));
 }
 
+TEST(client_session, movie_prelude_preserves_the_selected_map_until_playback) {
+    clPendingMenuAction_t pending = cl_pending_menu_action;
+    __typeof__(cl_cinematic_queue) queue;
+    uint32_t count = cl_cinematic_queue_count;
+    PATHSTR path;
+    bool model;
+    memcpy(queue, cl_cinematic_queue, sizeof(queue));
+    cl_cinematic_queue_count = 0;
+    CL_PlayMovieBeforeMap("Movies\\TutorialIn.mpq", "Maps\\Transport.w3m");
+    T_EQ(cl_pending_menu_action.type, CL_MENU_ACTION_MAP);
+    T_STREQ(cl_pending_menu_action.arg, "Maps\\Transport.w3m");
+    T_EQ(cl_cinematic_queue_count, 1);
+    T_ASSERT(CL_PopCinematic(path, &model, true));
+    T_STREQ(path, "Movies\\TutorialIn.mpq"); T_ASSERT(!model);
+    CL_PlayMovieBeforeMap("Movies\\unexpected.mpq", "");
+    T_EQ(cl_cinematic_queue_count, 0);
+    T_STREQ(cl_pending_menu_action.arg, "Maps\\Transport.w3m");
+    cl_pending_menu_action = pending; cl_cinematic_queue_count = count;
+    memcpy(cl_cinematic_queue, queue, sizeof(queue));
+}
+
 TEST(client_session, script_level_change_preserves_session_action_type) {
     memset(&cl_pending_menu_action, 0, sizeof(cl_pending_menu_action));
     MenuAction("level", "Maps\\Campaign\\Human02.w3m");
@@ -1048,6 +1078,125 @@ static void CL_TestRegisterMap(cstring_t map) {
 
 /* Dedicated test runs have no renderer; the menu rebuild re-resolves the canvas, which pushes its scene. */
 static void CL_TestSetUIScene(rect_t const *scene) { (void)scene; }
+
+static PATHSTR cl_test_cinematic_path;
+static uint32_t cl_test_cinematic_releases, cl_test_cinematic_event_releases;
+static bool cl_test_cinematic_available;
+static model_t *CL_TestCinematicLoad(cstring_t path) {
+    snprintf(cl_test_cinematic_path, sizeof(cl_test_cinematic_path), "%s", path);
+    return cl_test_cinematic_available ? (model_t *)(uintptr_t)1 : NULL;
+}
+static bool CL_TestCinematicInfo(model_t *model, modelInfo_t *info) {
+    (void)model;
+    *info = (modelInfo_t){ .sequenceCount = 2, .cameraCount = 2 };
+    return true;
+}
+static bool CL_TestCinematicDuration(model_t const *model, cstring_t name, uint32_t *duration) {
+    (void)model; (void)name; *duration = 60000; return true;
+}
+static void CL_TestCinematicRelease(model_t *model) { (void)model; cl_test_cinematic_releases++; }
+static void CL_TestCinematicReleaseEvents(uintptr_t instance) { (void)instance; cl_test_cinematic_event_releases++; }
+static void CL_TestCinematicFrame(drawCinematicFrame_t const *frame) { (void)frame; }
+static size2_t CL_TestCinematicWindowSize(void) { return (size2_t){0}; }
+static bool CL_TestNoTextInput(void) { return false; }
+static uint32_t cl_test_cinematic_sequence_starts;
+static void CL_TestCinematicSequence(model_t const *model, uint32_t sequence) {
+    (void)model; (void)sequence; cl_test_cinematic_sequence_starts++;
+}
+
+/* Drive the real frame scheduler; renderer callbacks replace only absent GL/model resources. */
+TEST(client_session, standalone_model_plays_on_client_frame_and_skip_keeps_frontend) {
+    struct client_state *old_cl = MemAlloc(sizeof(cl));
+    struct client_static old_cls = cls;
+    refExport_t old_re = re;
+    menuExport_t old_menu = menu;
+    clMenuLife_t old_life = cl_menu_life;
+    uint32_t old_realtime = cl_realtime;
+    T_ASSERT(!CL_MovieActive());
+    T_EQ(cl_cinematic_queue_count, 0u);
+    T_ASSERT(!cl_cinematic_paused);
+    memcpy(old_cl, &cl, sizeof(cl)); memset(&cl, 0, sizeof(cl));
+    cls.state = ca_disconnected; cls.key_dest = key_menu; cl_menu_life = CL_MENU_READY;
+    re.LoadModel = CL_TestCinematicLoad; re.GetModelInfo = CL_TestCinematicInfo;
+    re.GetModelAnimationDuration = CL_TestCinematicDuration;
+    re.StartModelCinematicSequence = CL_TestCinematicSequence;
+    re.ReleaseModel = CL_TestCinematicRelease; re.ReleaseEntityCameraEvents = CL_TestCinematicReleaseEvents;
+    re.GetWindowSize = CL_TestCinematicWindowSize;
+    re.DrawCinematicFrame = CL_TestCinematicFrame;
+    menu.TextInputActive = CL_TestNoTextInput;
+    cl_test_cinematic_releases = cl_test_cinematic_event_releases = 0;
+    cl_test_cinematic_sequence_starts = 0;
+    cl_test_cinematic_available = true;
+    SDL_FlushEvents(SDL_FIRSTEVENT, SDL_LASTEVENT);
+
+    CL_QueueModelCinematic("Doodads\\Cinematic\\AlternateFinale\\AlternateFinale.mdl");
+    T_ASSERT(!CL_MovieActive());
+    CL_UpdateFrame(16);
+    T_ASSERT(CL_MovieActive());
+    T_EQ(cl_test_cinematic_sequence_starts, 1u);
+    T_ASSERT(cl_cinematic_paused);
+    T_STREQ(cl_test_cinematic_path, "Doodads\\Cinematic\\AlternateFinale\\AlternateFinale.mdl");
+    T_EQ(cl_cinematic_queue_count, 0u);
+    T_EQ(cl_pending_menu_action.type, CL_MENU_ACTION_NONE);
+    T_EQ(cl_movie_deferred_action.type, CL_MENU_ACTION_NONE);
+    T_ASSERT(CL_MovieKeyEvent(K_ESCAPE, true));
+    CL_UpdateFrame(16);
+    T_ASSERT(!CL_MovieActive());
+    T_ASSERT(!cl_cinematic_paused);
+    T_EQ(cls.state, ca_disconnected); T_EQ(cls.key_dest, key_menu);
+    T_EQ(cl_test_cinematic_sequence_starts, 1u);
+    T_EQ(cl_menu_life, CL_MENU_READY);
+    T_EQ(cl_test_cinematic_releases, 1u); T_EQ(cl_test_cinematic_event_releases, 1u);
+
+#ifdef BZ_FFMPEG
+    {
+        sState_t *sound = MemAlloc(sizeof(s));
+        memcpy(sound, &s, sizeof(s)); memset(&s, 0, sizeof(s)); s.initialized = true;
+        CL_QueueModelCinematic("cancelled-finale.mdl");
+        CL_PlayMovieBeforeMap("Movies\\HumanOp.mpq", "Maps\\Transport.w3m");
+        CL_UpdateFrame(16); CL_CancelCinematicSession(); CL_UpdateFrame(16);
+        T_ASSERT(!CL_MovieActive()); T_ASSERT(!cl_cinematic_paused);
+        T_EQ(cl_cinematic_queue_count, 0u);
+
+        /* A frontend finale retains the selected map across both clips. Cancelling
+         * at the transition boundary avoids loading a world in this GL-free test. */
+        CL_QueueModelCinematic("finale-before-map.mdl");
+        CL_PlayMovieBeforeMap("Movies\\HumanOp.mpq", "Maps\\Transport.w3m");
+        CL_UpdateFrame(16);
+        T_ASSERT(CL_MovieActive()); T_EQ(cl_cinematic_queue_count, 1u);
+        T_STREQ(cl_test_cinematic_path, "finale-before-map.mdl");
+        T_EQ(cl_pending_menu_action.type, CL_MENU_ACTION_NONE);
+        T_EQ(cl_movie_deferred_action.type, CL_MENU_ACTION_MAP);
+        T_STREQ(cl_movie_deferred_action.arg, "Maps\\Transport.w3m");
+        T_EQ(cl_menu_life, CL_MENU_READY);
+        T_ASSERT(CL_MovieKeyEvent(K_ESCAPE, true));
+        CL_UpdateFrame(16);
+        T_ASSERT(CL_MovieActive()); T_EQ(cl_cinematic_queue_count, 0u);
+        T_ASSERT(S_StreamBufferedFrames(S_STREAM_MOVIE) > 0);
+        T_EQ(cl_movie_deferred_action.type, CL_MENU_ACTION_MAP);
+        T_STREQ(cl_movie_deferred_action.arg, "Maps\\Transport.w3m");
+        T_EQ(cl_menu_life, CL_MENU_READY);
+        T_ASSERT(CL_MovieKeyEvent(K_ESCAPE, true));
+        T_ASSERT(!CL_MovieActive());
+        T_EQ(cl_movie_deferred_action.type, CL_MENU_ACTION_MAP);
+        CL_CancelCinematicSession();
+        CL_UpdateFrame(16);
+        T_EQ(cl_movie_deferred_action.type, CL_MENU_ACTION_NONE);
+        T_EQ(cls.state, ca_disconnected); T_EQ(cl_menu_life, CL_MENU_READY);
+        free(s.streams[S_STREAM_MOVIE].data); s = *sound; MemFree(sound);
+    }
+#endif
+    cl_test_cinematic_available = false;
+    CL_QueueModelCinematic("Doodads\\Cinematic\\MissingFinale.mdl");
+    CL_UpdateFrame(16);
+    T_ASSERT(!CL_MovieActive()); T_ASSERT(!cl_cinematic_paused);
+    T_EQ(cl_cinematic_queue_count, 0u);
+    T_EQ(cls.state, ca_disconnected); T_EQ(cl_menu_life, CL_MENU_READY);
+    T_EQ(cl_pending_menu_action.type, CL_MENU_ACTION_NONE);
+
+    re = old_re; menu = old_menu; cls = old_cls; cl_menu_life = old_life; cl_realtime = old_realtime;
+    memcpy(&cl, old_cl, sizeof(cl)); MemFree(old_cl);
+}
 
 TEST(client_session, menu_resources_suspend_once_and_resume_once) {
     clMenuLife_t old_life = cl_menu_life;
@@ -1193,6 +1342,8 @@ void CL_Init(void) {
         .PlayMusic = CL_MusicPlayMenu,
         .StopMusic = CL_MusicStopMenu,
         .PlayMovie = CL_PlayMovie,
+        .PlayMovieBeforeMap = CL_PlayMovieBeforeMap,
+        .QueueModelCinematic = CL_QueueModelCinematic,
     });
     
     cl_menu_life = CL_MENU_SUSPENDED;

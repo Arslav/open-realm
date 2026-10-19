@@ -57,6 +57,19 @@ public class ImportTests extends Instrumentation {
             rejects("war3.mpq", new ByteArrayInputStream(alternate) {
                 @Override public void close() throws IOException { throw new IOException("Provider close failed"); }
             }, alternate.length);
+            byte[] movie = new byte[64];
+            System.arraycopy(new byte[] { 'R', 'I', 'F', 'F', 56, 0, 0, 0, 'A', 'V', 'I', ' ' }, 0, movie, 0, 12);
+            File movieFile = new File(directory, "Movies/TutorialIn.mpq");
+            require(ArchiveStore.copy(directory, "TutorialIn.mpq", new ByteArrayInputStream(movie), movie.length,
+                LauncherActivity::checkArchive) == movie.length, "AVI with MPQ suffix was rejected");
+            require(Arrays.equals(movie, Files.readAllBytes(movieFile.toPath())), "Movie bytes changed");
+            boolean badMovie = false;
+            try { ArchiveStore.copy(directory, "TutorialIn.mpq", new ByteArrayInputStream(fixture), fixture.length,
+                LauncherActivity::checkArchive); }
+            catch (IOException error) { badMovie = true; }
+            require(badMovie && Arrays.equals(movie, Files.readAllBytes(movieFile.toPath())),
+                "Invalid movie replaced a working video");
+            require(movieFile.getParentFile().list().length == 1, "Failed movie import left staging files");
             for (String library : GameActivity.libraries()) System.loadLibrary(library);
             Intent launch = new Intent().putExtra("frames", 123);
             String startup = String.join("\n", GameActivity.arguments(getTargetContext().getFilesDir(), getTargetContext().getCacheDir(), launch));
@@ -100,6 +113,13 @@ public class ImportTests extends Instrumentation {
             startup = String.join("\n", GameActivity.arguments(getTargetContext().getFilesDir(), getTargetContext().getCacheDir(), launch));
             require(startup.contains("+map\nMaps/Campaign/Prologue01.w3m") && !startup.contains("War3XRegularCreditsIce.w3x"),
                 "Explicit diagnostic map must override the default scene");
+            Intent movieLaunch = new Intent().putExtra("movie", "HumanOp");
+            String movieArgs = String.join("\n", GameActivity.arguments(getTargetContext().getFilesDir(), getTargetContext().getCacheDir(), movieLaunch));
+            require(movieArgs.contains("+playmovie\nHumanOp") && movieArgs.contains("cl_start_menu\n\n"),
+                "Movie diagnostic must suppress the automatic frontend intro");
+            movieLaunch.putExtra("smoke", true);
+            require(!String.join("\n", GameActivity.arguments(getTargetContext().getFilesDir(), getTargetContext().getCacheDir(), movieLaunch)).contains("playmovie"),
+                "Smoke launch inherited movie playback");
             startup = String.join("\n", GameActivity.arguments(getTargetContext().getFilesDir(), getTargetContext().getCacheDir(), new Intent().putExtra("smoke", true)));
             require(startup.contains("+test\nwc3_smoke.*") && !startup.contains("+map") && !startup.contains("-tft"),
                 "Smoke launch must not start a retail credits scene");
@@ -149,6 +169,10 @@ public class ImportTests extends Instrumentation {
             finish(1, result);
         } finally {
             if (directory != null) {
+                File movies = new File(directory, "Movies");
+                File[] videos = movies.listFiles();
+                if (videos != null) for (File video : videos) video.delete();
+                movies.delete();
                 File[] files = directory.listFiles();
                 if (files != null) for (File file : files) file.delete();
                 directory.delete();

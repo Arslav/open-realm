@@ -270,6 +270,11 @@ as unknown commands because only the secondary click dispatcher knew them. The s
 focused edit box during an active screen transition. `M_TextInput` now gates SDL text events on menu activity, screen ownership,
 and the transition lock before calling `UI_EditTextInput`.
 
+`menu.TextInputActive` applies the same ownership/transition gates and requires a focused edit box. Screen installation
+clears outgoing edit focus. Returning from gameplay to campaign selection therefore does not request a mobile keyboard;
+the generic client starts SDL text input only when an editor owns it. See [Platform Text Input](../../../architecture/ui-system.md#platform-text-input)
+for the client/console lifecycle and regression tests.
+
 Named campaign shortcuts use the actual CampaignStrings keys, including `NightElf` (the former `night-elf` argument resolved to
 NULL). Campaign/mission index commands operate on the current campaign lists; lobby commands operate on the selected map and
 host-owned slots. Those state prerequisites remain the screen controllers' responsibility. The legacy `menu_playerconfig`

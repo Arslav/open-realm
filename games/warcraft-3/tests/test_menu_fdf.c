@@ -21,6 +21,9 @@ static char const *captured_image_path;
 static char const *captured_model_path;
 static char captured_command[8192];
 static char captured_movie_path[MAX_PATHLEN];
+static char captured_movie_map[MAX_PATHLEN];
+static char captured_model_cinematic_path[MAX_PATHLEN];
+static bool test_movie_available = true;
 static char captured_cvar_name[64];
 static char captured_cvar_value[64];
 static char captured_printf[512];
@@ -390,10 +393,20 @@ static void test_cmd_execute_text(cstring_t text) {
 
 static bool test_play_movie(cstring_t path) {
     snprintf(captured_movie_path, sizeof(captured_movie_path), "%s", path ? path : "");
-    return true;
+    return test_movie_available;
+}
+
+static void test_play_movie_before_map(cstring_t path, cstring_t map) {
+    test_play_movie(path);
+    snprintf(captured_movie_map, sizeof(captured_movie_map), "%s", map);
+}
+
+static void test_queue_model_cinematic(cstring_t path) {
+    snprintf(captured_model_cinematic_path, sizeof(captured_model_cinematic_path), "%s", path);
 }
 
 static cstring_t test_cvar_string(cstring_t name, cstring_t fallback) {
+    if (!strcmp(name, "wc3_intro_seen")) return Cvar_String(name, fallback);
     if (!strcmp(name, "map")) return test_map;
     if (!strcmp(name, "r_backend")) return test_graphics_backend;
     if (name && !strcmp(name, "ui_skip_transitions")) return test_skip_menu_transitions ? "1" : "0";
@@ -424,6 +437,7 @@ static void test_cvar_register(cstring_t name, cstring_t value, uint32_t flags) 
 }
 
 static void test_cvar_set(cstring_t name, cstring_t value) {
+    if (name && !strcmp(name, "wc3_intro_seen")) Cvar_Set(name, value);
     snprintf(captured_cvar_name, sizeof(captured_cvar_name), "%s", name ? name : "");
     snprintf(captured_cvar_value, sizeof(captured_cvar_value), "%s", value ? value : "");
     if (name && !strcmp(name, "fs_expansion")) test_fs_expansion = value && atoi(value) != 0;
@@ -1632,6 +1646,42 @@ TEST(menu_fdf, campaign_difficulty_registration_marks_loaded_setting_archived) {
     Cvar_Set(WC3_CAMPAIGN_DIFFICULTY_CVAR, previous_value);
     mi = saved;
 }
+
+#ifdef BZ_FFMPEG
+/* A missing/unsupported movie must be retried next session; successful intros are remembered per edition. */
+TEST(menu_fdf, startup_movies_play_once_per_edition_after_menu_initialization) {
+    menuImport_t saved = mi;
+    char previous[32];
+    test_command_imports();
+    snprintf(previous, sizeof(previous), "%s", Cvar_String("wc3_intro_seen", "0"));
+    FOR_LOOP(i, 5) {
+        reset_ui_state();
+        test_command_imports();
+        test_fs_expansion = i == 2;
+        test_movie_available = i != 3;
+        test_skip_menu_transitions = true;
+        if (i == 4) test_map = "Maps\\Campaign\\Human01.w3m";
+        Cvar_Set("wc3_intro_seen", i == 1 || i == 2 ? "1" : "0");
+        mi.Printf = test_ui_printf;
+        mi.FS_ReadFile = test_fs_read_file; mi.FS_FreeFile = test_fs_free_file;
+        mi.Cvar_String = test_cvar_string; mi.Cvar_Set = test_cvar_set;
+        mi.Cvar_Register = test_cvar_register;
+        mi.PlayMovie = test_play_movie;
+        M_Init();
+        captured_movie_path[0] = '\0';
+        M_ShowMainMenu();
+        T_STREQ(captured_movie_path, i == 1 || i == 4 ? "" : i == 2 ? "Movies\\IntroX.mpq" : "Movies\\TutorialIn.mpq");
+        T_STREQ(Cvar_String("wc3_intro_seen", "0"), i == 2 ? "3" : i >= 3 ? "0" : "1");
+        captured_movie_path[0] = '\0';
+        M_ShowMainMenu();
+        T_STREQ(captured_movie_path, "");
+        M_Shutdown();
+    }
+    test_movie_available = true; test_fs_expansion = false; test_map = "";
+    Cvar_Set("wc3_intro_seen", previous);
+    mi = saved;
+}
+#endif
 
 TEST(menu_fdf, gameplay_ignores_stale_glue_hit_test_cache) {
     menuImport_t saved = mi;
@@ -3543,6 +3593,17 @@ TEST(menu_fdf, main_menu_edition_button_rolls_back_when_tft_data_is_missing) {
     mi = saved;
 }
 
+#ifdef BZ_FFMPEG
+static cstring_t test_credits_miscui;
+static uint32_t test_regular_credits_reads;
+static int test_credits_fs_read_file(cstring_t path, void **buffer) {
+    if (strcasecmp(path, "UI\\MiscUI.txt")) return test_fs_read_file(path, buffer);
+    test_regular_credits_reads++;
+    *buffer = test_credits_miscui ? strdup(test_credits_miscui) : NULL;
+    return test_credits_miscui ? (int)strlen(test_credits_miscui) : -1;
+}
+#endif
+
 static void test_single_player_campaign_profile(bool tft) {
     cstring_t files[] = {
         "UI\\FrameDef\\GlobalStrings.fdf",
@@ -3584,6 +3645,8 @@ static void test_single_player_campaign_profile(bool tft) {
     mi.MemAlloc = test_ui_mem_alloc;
     mi.MemFree = test_ui_mem_free;
     mi.PlayMovie = test_play_movie;
+    mi.PlayMovieBeforeMap = test_play_movie_before_map;
+    mi.QueueModelCinematic = test_queue_model_cinematic;
     mi.UserPath = test_user_path;
 
     if (!singlePlayerMenuScreen.load()) {
@@ -3656,6 +3719,12 @@ static void test_single_player_campaign_profile(bool tft) {
     captured_command[0] = '\0';
     Cmd_ExecuteString(tft ? "menu_single_player_campaign_select 1" : "menu_single_player_campaign_select 0");
     T_STREQ(captured_command, "");
+#ifdef BZ_FFMPEG
+    captured_movie_path[0] = captured_movie_map[0] = '\0';
+    Cmd_ExecuteString("menu_single_player_mission_select 2");
+    T_STREQ(captured_movie_path, tft ? "Movies\\HumanXOp.mpq" : "Movies\\HumanOp.mpq");
+    T_STREQ(captured_movie_map, tft ? "Maps\\FrozenThrone\\Campaign\\HumanX01.w3x" : "Maps\\Campaign\\Human01.w3m");
+#endif
 
     mission_select_frame = UI_FindFrame("MissionSelectFrame");
     mission_name = UI_FindFrame("MissionName");
@@ -3690,11 +3759,17 @@ static void test_single_player_campaign_profile(bool tft) {
                  : sp_row_shows("MissionListBox", 3, "", "The Defense of Strahnbrad", false, 2));
     T_ASSERT(sp_row_shows("MissionListBox", 6, "Cinematic", tft ? "Alliance Ending" : "Human Ending", true, 5));
     captured_movie_path[0] = '\0';
+    captured_movie_map[0] = '\0';
     captured_command[0] = '\0';
     Cmd_ExecuteString(sp_row("MissionListBox", 0, "CameraButton")->OnClick);
     T_STREQ(captured_movie_path,
             tft ? "Movies\\HumanXIntro.mpq" : "Movies\\HumanIntro.mpq");
     T_STREQ(captured_command, "");
+    T_STREQ(captured_movie_map, "");
+    /* Ordinary campaign endings have no full-screen model finale and stay independent. */
+    Cmd_ExecuteString(sp_row("MissionListBox", 6, "CameraButton")->OnClick);
+    T_STREQ(captured_movie_path, tft ? "Movies\\HumanXEd.mpq" : "Movies\\HumanEd.mpq");
+    T_STREQ(captured_movie_map, "");
 #else
     /* Three missions centred in sixteen slots: the column starts 6.5 slots down. */
     T_FEQ(sp_row("MissionListBox", 0, "")->Points.y[FPP_MIN].offset, -6.5f * 0.0315625f, 0.0001f);
@@ -3708,6 +3783,88 @@ static void test_single_player_campaign_profile(bool tft) {
     Cmd_ExecuteString(back_button->OnClick);
     T_ASSERT(!campaign_select_frame->hidden);
     T_ASSERT(mission_select_frame->hidden);
+
+#ifdef BZ_FFMPEG
+    /* RoC's final campaign ends with a movie after a map, without a model finale.
+     * In TFT this same campaign is earlier than another campaign with an ending. */
+    SinglePlayerMenu_LaunchCampaign("NightElf");
+    captured_command[0] = captured_movie_path[0] = captured_movie_map[0] = '\0';
+    captured_model_cinematic_path[0] = '\0';
+    Cmd_ExecuteString(sp_row("MissionListBox", 1, "CameraButton")->OnClick);
+    T_STREQ(captured_movie_path, tft ? "Movies\\AlternateSentinelsEnding.mpq"
+                                   : "Movies\\AlternateForestEnding.mpq");
+    T_STREQ(captured_movie_map, tft ? "" : "Maps\\Campaign\\BonusCredits.w3m");
+    T_STREQ(captured_command, "");
+    T_STREQ(captured_model_cinematic_path, "");
+    Cmd_ExecuteString(back_button->OnClick);
+#endif
+
+    SinglePlayerMenu_LaunchCampaign("Undead");
+    T_ASSERT(sp_row_shows("MissionListBox", 0, tft ? "Chapter One" : "",
+                          tft ? "King Arthas" : "Trudging through the Ashes", false, 0));
+    T_ASSERT(sp_row_shows("MissionListBox", 1, "Finale", "Alternate Finale", true, 1));
+    T_ASSERT(sp_row_shows("MissionListBox", 2, "Epilogue", "Alternate Epilogue", true, 2));
+    for (uint32_t i = 1; i <= 2; i++) {
+        captured_command[0] = '\0';
+        captured_model_cinematic_path[0] = '\0';
+        captured_movie_path[0] = '\0';
+        captured_movie_map[0] = '\0';
+        Cmd_ExecuteString(sp_row("MissionListBox", i, "CameraButton")->OnClick);
+        T_STREQ(captured_command, "");
+        T_STREQ(captured_movie_path,
+#ifdef BZ_FFMPEG
+                i == 2 ? (tft ? "Movies\\AlternateEnding.mpq" : "Movies\\UndeadEd.mpq") :
+#endif
+                "");
+        T_STREQ(captured_movie_map,
+#ifdef BZ_FFMPEG
+                i == 2 ? (tft ? "Maps\\FrozenThrone\\Campaign\\War3XBonusCredits.w3x"
+                             : "Maps\\Campaign\\BonusCredits.w3m") :
+#endif
+                "");
+        T_STREQ(captured_model_cinematic_path, i == 1
+                ? "Doodads\\Cinematic\\AlternateFinale\\AlternateFinale.mDl"
+                : "Doodads\\Cinematic\\AlternateEpilogue\\AlternateEpilogue.MDX");
+        T_ASSERT(!mission_select_frame->hidden);
+    }
+#ifdef BZ_FFMPEG
+    /* Selecting the ending movie itself also continues to the authored credits. */
+    captured_movie_path[0] = captured_movie_map[0] = '\0';
+    captured_model_cinematic_path[0] = '\0';
+    Cmd_ExecuteString(sp_row("MissionListBox", 3, "CameraButton")->OnClick);
+    T_STREQ(captured_movie_path, tft ? "Movies\\AlternateEnding.mpq" : "Movies\\UndeadEd.mpq");
+    T_STREQ(captured_movie_map, tft ? "Maps\\FrozenThrone\\Campaign\\War3XBonusCredits.w3x"
+                                 : "Maps\\Campaign\\BonusCredits.w3m");
+    T_STREQ(captured_model_cinematic_path, "");
+    /* Regular menu credits are a different map. Their config, including absent
+     * config, must never change or disable the campaign's bonus-credits destination. */
+    cstring_t configs[] = {
+        "[Misc]\nCreditsFile=\"Maps\\Campaign\\LegacyCredits.w3m\"\nCreditsFile_V1=\"ignored.w3x\"\n",
+        "[Misc]\nCreditsFile=Maps\\Campaign\\BareCredits.w3m\n",
+        "[Misc]\nUnrelated=1\n",
+        NULL,
+    };
+    mi.FS_ReadFile = test_credits_fs_read_file;
+    test_regular_credits_reads = 0;
+    FOR_LOOP(i, sizeof(configs) / sizeof(configs[0])) {
+        test_credits_miscui = configs[i];
+        captured_movie_path[0] = captured_movie_map[0] = '\0';
+        Cmd_ExecuteString(sp_row("MissionListBox", 2, "CameraButton")->OnClick);
+        T_STREQ(captured_movie_map, tft ? "Maps\\FrozenThrone\\Campaign\\War3XBonusCredits.w3x"
+                                     : "Maps\\Campaign\\BonusCredits.w3m");
+        T_STREQ(captured_movie_path, tft ? "Movies\\AlternateEnding.mpq" : "Movies\\UndeadEd.mpq");
+    }
+    T_EQ(test_regular_credits_reads, 0u);
+    mi.FS_ReadFile = test_fs_read_file;
+    test_credits_miscui = NULL;
+#endif
+    captured_command[0] = '\0';
+    captured_model_cinematic_path[0] = '\0';
+    Cmd_ExecuteString(sp_row("MissionListBox", 0, "Button")->OnClick);
+    T_STREQ(captured_model_cinematic_path, "");
+    T_STREQ(captured_command, tft ? "map \"Maps\\FrozenThrone\\Campaign\\UndeadX01.w3x\""
+                                  : "map \"Maps\\Campaign\\Undead01.w3m\"");
+    Cmd_ExecuteString(back_button->OnClick);
 
     if (!tft) {
         /* Eighteen missions overflow the sixteen slots: the column starts at the top and the wheel scrolls it. */

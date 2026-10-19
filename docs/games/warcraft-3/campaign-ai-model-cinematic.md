@@ -66,6 +66,17 @@ working compatibility approximations, not proven retail algorithms.
 
 ## Full-screen model cinematics
 
+- Numbered campaign entries are not necessarily maps. Russian TFT 1.26a `UI/CampaignStrings_exp.txt`
+  authors Undead `Mission13` as `"Финал","Время настало...","Doodads\Cinematic\ArthasIllidanFight\ArthasIllidanFight.mdl"`.
+  The old menu sent every numbered entry to `map`, which rejected this model as a map archive.
+  `single_player.c` now classifies `.mdl`/`.mdx` paths case-insensitively and calls the typed
+  `menuImport.QueueModelCinematic` service. These rows use camera-button art, keep their authored
+  mission index/progress policy, and remain available without FFmpeg, including browser builds.
+  Ordinary map entries retain the map launch path. In decoder-enabled builds, the last numbered
+  model entry queues the same campaign's `EndCinematic`/`EdCinematic` movie after the model.
+  Earlier model entries and campaigns without an ending movie remain standalone. EOF/skip of
+  the model advances into that movie. Ending EOF/skip then loads the edition's authored
+  credits map; it does not expose the campaign menu between the clips or before loading.
 - `PlayModelCinematic(modelName)` passes the **authored asset name** from JASS
   to the universal client. The normal game module does not decode or render
   the model; the renderer already resolves `.mdl` to `.mdx`.
@@ -78,9 +89,22 @@ working compatibility approximations, not proven retail algorithms.
   existing renderer; model instance presentation state is released on stop.
   A model scene suspends gameplay music only if it was not already suspended,
   and restores that suspension on natural completion, Escape and disconnect.
-  Existing effect sounds stop when the scene starts; the model's own events
-  remain active. **BZ_COMPAT_GUESS:** audio isolation mirrors movie playback;
-  no special `FinalCinematic.mp3` soundtrack is assumed.
+  Existing effect sounds stop before the first sequence starts. The isolated
+  scene owns effect audio until EOF, skip or cancellation, which stop its sounds
+  before resuming the prior music session.
+- Sequence audio is authored separately from MDX events: `UI/MiscData.txt`
+  `[<MODL name>Sounds] SceneN` names an `UI/SoundInfo/AnimSounds.slk` row.
+  `refExport.StartModelCinematicSequence` lets the game renderer resolve this
+  binding and use the ordinary non-positional sound path at the row's volume.
+  The generic client only announces actual sequence changes; an unbound next
+  sequence does not restart or cut an earlier track. Both quoted and bare
+  labels are accepted. Missing authored rows/files produce diagnostics.
+  Russian TFT 1.26a binds `[ArthasIllidanFightSounds] Scene1="FinalCinematic"`
+  to `Sound\Ambient\DoodadEffects\FinalCinematic.mp3`, volume 127. The MDX
+  itself has MRF/MRD events but **no SND events**, explaining the previously
+  silent playback. Audio starts with sequence 1 after sequence 0's five-second
+  black opening; neither the soundtrack path nor the model name is hardcoded
+  into the client. Scene audio uses sound-effect preferences, not music preferences.
 - Model scenes may start without a pending map/menu transition. `PlayCinematic`
   movie files wait for a session transition so a call made during `Next_Level_Prep`
   cannot interrupt the rest of the map's scripted ending. When both types are
@@ -90,6 +114,49 @@ working compatibility approximations, not proven retail algorithms.
   requests; overflow reports a diagnostic and rejects the new request while
   preserving prior items. The session transition runs after all eligible scenes
   finish or are skipped.
+- Frontend finale replay uses `menuImport.PlayMovieBeforeMap`: the client frame scheduler
+  retains the credits-map transition across both model and movie playback. Script
+  `QueueMovie` requests still wait for a map/menu transition; standalone model playback
+  does not release an unrelated movie. Cancellation clears the whole playlist and its
+  deferred transition. In the original Russian TFT 1.26a data, Undead's
+  final model is followed by `EndCinematic` `OutroX` ("Восхождение"). Completing
+  `UndeadX08.w3x` separately queues `OutroX` through `SetCinematicAvailableBJ`, then
+  `PlayModelCinematic`, and continues toward `War3XBonusCredits.w3x` through the
+  victory/next-level path. `Trig_Next_Level_Prep_Actions` authors that next-level path;
+  `Trig_Next_Level_Run_Actions` requests the model, then calls `CustomVictoryBJ`.
+- Finale replay from the menu (the last numbered model plus its ending, or an edition's
+  final ending row selected directly) continues to the **post-campaign bonus credits**:
+  `Maps\Campaign\BonusCredits.w3m` (RoC) or
+  `Maps\FrozenThrone\Campaign\War3XBonusCredits.w3x` (TFT). These are the exact
+  `SetNextLevelBJ` destinations in NightElf07 / UndeadX08, recorded as stock edition
+  routing constants in the WC3 menu because CampaignStrings has no continuation field.
+  Replay does not execute a finished mission's victory/progress/cache writes merely
+  to discover its next map. `PlayMovieBeforeMap` preserves the map across both clips;
+  the client executes it after EOF/skip. To support RoC's finale without a numbered model, the final ending
+  is the last campaign in the authored `CampaignList` order with a non-empty ending
+  movie. Later bonus campaigns without an ending do not consume that position.
+  This identifies RoC NightElf and TFT Undead from metadata; movie/faction names
+  are not matched. Earlier campaign movie rows remain independent.
+  **BZ_COMPAT_GUESS:** the order-based finale classification is a compatibility policy:
+  CampaignStrings authors selector order, not an explicit story-finale flag.
+- **Do not use `UI/MiscUI.txt` `[Misc] CreditsFile[_V0/_V1]` for campaign endings.**
+  Those keys select the separate regular credits: `maps\campaign\warcraftiiicredits.w3m`
+  (RoC) / `maps\frozenthrone\campaign\war3xregularcreditsice.w3x` (TFT).
+  Using them for finale replay was a confirmed routing mistake in both editions.
+  All four credits assets are scripted maps, not movie files. Bonus maps finish through
+  `CustomVictoryBJ` without another next level. RoC's bonus map also reads the stored
+  `Credits/VictoryHard` flag for its extra StarCraft scene; replay does not fabricate it.
+  The project's current `menu_credits` dialog separately lists OpenWarcraft contributors;
+  it is not either of the original game's credits maps. To inspect the source:
+  `build/bin/mpqtool -data <game-dir> grep CreditsFile UI` and extract `war3map.j`
+  from the campaign maps with `mpqtool -mpq <extracted-map> cat war3map.j`.
+- RoC 1.26a's `NightElf07.w3m` `Trig_Next_Level_Run_Actions` calls
+  `SetCinematicAvailableBJ(true, bj_CINEMATICINDEX_NED)` (`NightElfEd`, "Конец вечности"),
+  `SetNextLevelBJ("Maps\\Campaign\\BonusCredits.w3m")`, then `CustomVictoryBJ`.
+  It has no `PlayModelCinematic` step. The original mission route already retains
+  that next-level action through the movie. Frontend replay selects the same bonus map
+  without executing those victory/cache writes; previously its model-only classification
+  returned directly to the menu.
 - Disconnect and shutdown cancel active playback, clear deferred transitions
   and restore the session's prior pause state. A missing/unloadable asset is
   skipped so it cannot permanently suppress a pending victory or map change.
@@ -101,8 +168,8 @@ working compatibility approximations, not proven retail algorithms.
 - **Known visual gap:** Warcraft's MRF/MRD animated cape mesh events are not
   implemented by the current MDX renderer. The cinematic model still renders
   and advances its scenes, but the cape morph animation is incomplete.
-  Special soundtrack selection beyond existing MDX sound events is also not
-  established; do not hard-code `FinalCinematic.mp3` into generic client code.
+  Exact retail sequence timing and visual parity still require comparison;
+  authored sequence sound bindings are now consumed without per-model exceptions.
 
 ## Save/load and limitations
 
@@ -118,15 +185,41 @@ change deliberately does not pretend that copying bot flags into `level_fields`
 would provide AI script restoration. A complete bot save feature must serialize
 or reconstruct each bot's VM and outstanding work alongside its captain data.
 
-## Verification (not run in this patch preparation)
+## Verification
 
 The game module tests cover alert suppression, alarm save round-trips,
 captain logical teleport with empty and populated rosters, authored movement
 flags under AI policy changes, and JASS registration/argument forwarding.
-Client tests cover FIFO order and bounded overflow without loading retail
-assets; full scene rendering and Escape still require interactive testing. The
+Client tests cover FIFO order, bounded overflow, and standalone playback through
+`CL_UpdateFrame`, including Escape and a missing asset without losing the frontend.
+With FFmpeg enabled, that regression also advances from a model into a real
+fixture AVI through the frame scheduler, checks decoded PCM, and verifies cancellation
+does not leave the ending queued. The requested map remains deferred through the model
+and AVI; cancellation at the final boundary avoids world/GL initialization in this test.
+Menu tests drive the real camera-button commands with non-stock model paths in
+both the legacy RoC `MissionN`/`FileN` and TFT three-column `MissionN` schemas;
+they also check that map entries still launch maps. Non-stock movie/model paths cover
+both editions' exact bonus-credit destinations, direct ending replay and unrelated
+campaign endings. Conflicting, empty and absent `UI/MiscUI.txt` fixtures must not be read
+or change this routing. A RoC-shaped map-plus-ending
+fixture (without a model) checks final credits; the same campaign's earlier position
+in the TFT list checks independent replay with a different movie name. Full retail scene rendering
+remains an interactive verification gap. The
 cinematic JASS test verifies the original MDL asset path crosses the game/
 client callback without translating it into a movie path.
+
+`renderer_game.cinematic_scene_sound_uses_misc_model_name_and_animsounds` reads
+the fixture MPQ's real INI/SLK parser path, covering the stock binding plus a
+different model/label/path/volume, absent bindings and unresolved rows.
+`client_movie.model_sequence_audio_survives_scene_changes_and_stops_on_skip_eof_cancel`
+checks actual mixer PCM, first-sequence ordering, continuity and all three teardown
+paths. The client-frame regression also checks delivery of the sequence hook.
+The menu import and renderer export tables changed; rebuild client, menu and
+renderer modules together. Network and save layouts are unchanged.
+
+Run `make test` for both editions and the menu suite; `make FFMPEG=1 test-menu`
+also covers model rows beside decoder-enabled movie rows. The focused scheduler
+regression is `client_session.standalone_model_plays_on_client_frame_and_skip_keeps_frontend`.
 
 Runtime acceptance with retail assets:
 
@@ -144,5 +237,4 @@ Runtime acceptance with retail assets:
    are deliberately listed as a known outstanding renderer feature.
 
 Follow [AGENTS.md](https://github.com/corepunch/open-realm/blob/main/AGENTS.md) and [CONTRIBUTING.md](https://github.com/corepunch/open-realm/blob/main/CONTRIBUTING.md)
-for the normal build and test process. Compilation, game execution and unit
-suite testing were intentionally left to the integrator for this patch.
+for the normal build and test process.

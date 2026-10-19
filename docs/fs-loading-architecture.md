@@ -40,6 +40,9 @@ top level; per-game read-only defaults under `share/<game>/`, installed from `ga
 archives remain authoritative for all Blizzard paths. WoW production UI does not place project-owned XML under `share/Interface/FrameXML/`: load the
 native archive path when it exists, or construct runtime presentation when classic WoW itself has no FrameXML for that feature.
 `-data` and `extra_data` add further loose roots and archives after initialization.
+Recursive archive discovery checks RIFF/AVI identity before mounting an archive-extension candidate.
+Such files remain loose media (classic WC3 movies use `.mpq` names); unknown or corrupt archive
+candidates still pass through the normal MPQ validator and retain its failure diagnostics.
 
 ## refImport_t FS surface
 

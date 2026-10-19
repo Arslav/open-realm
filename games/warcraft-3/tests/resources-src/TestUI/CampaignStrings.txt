@@ -23,9 +23,16 @@ Header="Undead Campaign"
 Name="Path of the Damned"
 Background="UndeadBackdrop"
 Cursor=2
-Entries=1
+EdCinematic="Undead Ending"
+Entries=3
 Mission0="Trudging through the Ashes"
 File0="Undead01"
+Title1="Finale"
+Mission1="Alternate Finale"
+File1="Doodads\Cinematic\AlternateFinale\AlternateFinale.mDl"
+Title2="Epilogue"
+Mission2="Alternate Epilogue"
+File2="Doodads\Cinematic\AlternateEpilogue\AlternateEpilogue.MDX"
 
 [Orc]
 Header="Orc Campaign"
@@ -41,6 +48,7 @@ Header="Night Elf Campaign"
 Name="Eternity's End"
 Background="NightElfBackdrop"
 Cursor=3
+EndCinematic="Cinematic","Alternate Forest Ending","AlternateForestEnding"
 Entries=1
 Mission0="Enemies at the Gate"
 File0="NightElf01"

@@ -78,8 +78,10 @@ bool R_EntityAttachmentPosition(renderEntity_t const *entity, cstring_t prefix, 
 
 bool R_ExtractEntityCamera(renderEntity_t const *entity, float aspect, viewDef_t *viewdef);
 bool R_SetEntityAnimFrame(model_t const *model, cstring_t anim, renderEntity_t *entity);
+void R_StartModelCinematicSequence(model_t const *model, uint32_t sequence);
 void R_DrawSprite(drawSprite_t const *sprite);
 bool R_DrawCursor(drawCursor_t const *cursor);
+void R_DrawMediaControl(rect_t const *rect, bool pressed);
 w3TerrainArt_t const *R_TerrainArt(uint32_t id);
 w3CliffType_t const *R_CliffType(uint32_t id);
 

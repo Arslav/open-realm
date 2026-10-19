@@ -98,6 +98,10 @@ $(WC3_SC2API_BUILD_CONFIG): wc3-sc2api-build-config-force | $(LIB_DIR)
 FFMPEG ?= 0
 WC3_FFMPEG_LIBS :=
 ifeq ($(FFMPEG),1)
+ifneq ($(FFMPEG_ROOT),)
+WC3_CFLAGS += -DBZ_FFMPEG -I$(FFMPEG_ROOT)/include
+WC3_FFMPEG_LIBS := -L$(FFMPEG_ROOT)/lib -lavformat -lavcodec -lavutil -lswscale -lswresample
+else
 FFMPEG_PKGS := libavformat libavcodec libavutil libswscale libswresample
 ifeq ($(shell pkg-config --exists $(FFMPEG_PKGS) && echo yes),)
 $(error FFMPEG=1 requires pkg-config packages: $(FFMPEG_PKGS))
@@ -105,6 +109,14 @@ endif
 WC3_CFLAGS += -DBZ_FFMPEG $(shell pkg-config --cflags $(FFMPEG_PKGS))
 WC3_FFMPEG_LIBS := $(shell pkg-config --libs $(FFMPEG_PKGS))
 endif
+endif
+
+WC3_MEDIA_BUILD_CONFIG := $(LIB_DIR)/.wc3-media-build-config
+.PHONY: wc3-media-build-config-force
+$(WC3_MEDIA_BUILD_CONFIG): wc3-media-build-config-force | $(LIB_DIR)
+	@echo '$(FFMPEG) $(FFMPEG_ROOT) $(WC3_FFMPEG_LIBS)' > $@.tmp
+	@cmp -s $@.tmp $@ || cp $@.tmp $@
+	@rm -f $@.tmp
 
 # Optional SC2API compatibility core. This remains game-module-owned: enabling
 # it must not add Warcraft-specific branches to the generic engine/server.
@@ -298,6 +310,8 @@ $(eval $(call app_schema,$(WC3_TEST_BINARY),$(SHARED_LIB) $(JASS_LIB) $(SHEET_LI
 
 openwarcraft3-tests: $(WC3_TEST_BINARY)
 
+$(MENU_LIB) $(BINARY) $(WC3_TEST_BINARY) $(BIN_DIR)/test_openwarcraft3_ui$(EXE_EXT): $(WC3_MEDIA_BUILD_CONFIG)
+
 .PHONY: test-eos-service
 ifeq ($(EOS),1)
 test-eos-service: $(WC3_TEST_BINARY) test-assets
@@ -374,7 +388,8 @@ $(eval $(call test_schema,test-mpq-compression,$(SHARED_LIB),$(TEST_CFLAGS) -DMP
 
 $(eval $(call test_schema,test-commands,test-assets $(SHARED_LIB) $(SHEET_LIB),$(TEST_CFLAGS),$(BIN_DIR)/test_commands$(EXE_EXT),tests/test_runner.c $(WC3_TEST_DIR)/test_commands.c client/cl_screenshot.c common/common.c common/cmd.c common/cvar.c common/msg.c common/net.c common/mpq.c,-lsheet -lshared -lm -lz $(NET_LIBS) $(LIBS),))
 $(eval $(call test_schema,test-sound,$(LIB_DIR) $(CLIENT_HEADERS) $(COMMON_HEADERS) sound/s_local.h vendor/minimp3/minimp3.h tests/resources/sound-test.mp3,$(CFLAGS) -DBZ_TESTS -DTRUE=1 -DFALSE=0,$(BIN_DIR)/test_sound$(EXE_EXT),tests/test_runner.c tests/test_sound.c sound/s_sound.c sound/s_mp3.c shared/test.c,$(LIBS) -lm,))
-$(eval $(call test_schema,test-music-mp3,$(LIB_DIR) client/cl_music.c vendor/minimp3/minimp3.h tests/resources/sound-test.mp3,$(TEST_CFLAGS) -DBZ_TESTS -ffunction-sections -fdata-sections,$(BIN_DIR)/test_music_mp3$(EXE_EXT),tests/test_runner.c tests/test_music_mp3.c sound/s_mp3.c shared/test.c,$(TEST_GC_SECTIONS) $(LIBS) -lm,))
+# This standalone suite exercises minimp3 even when the application selects FFmpeg.
+$(eval $(call test_schema,test-music-mp3,$(LIB_DIR) client/cl_music.c vendor/minimp3/minimp3.h tests/resources/sound-test.mp3,$(TEST_CFLAGS) -UBZ_FFMPEG -DBZ_TESTS -ffunction-sections -fdata-sections,$(BIN_DIR)/test_music_mp3$(EXE_EXT),tests/test_runner.c tests/test_music_mp3.c sound/s_mp3.c shared/test.c,$(TEST_GC_SECTIONS) $(LIBS) -lm,))
 $(eval $(call test_schema,test-server-net,test-assets $(SHARED_LIB) $(SHEET_LIB),$(TEST_CFLAGS),$(BIN_DIR)/test_server_net$(EXE_EXT),tests/test_runner.c $(WC3_TEST_DIR)/test_server_net.c $(WC3_TEST_DIR)/test_client_stubs.c client/cl_canvas.c server/sv_init.c server/sv_lan.c server/sv_main.c server/sv_thread.c server/sv_host.c server/sv_lobby.c server/sv_send.c server/sv_ents.c server/sv_parse.c server/sv_user.c common/net.c common/msg.c,-lsheet -lshared -lm -lz $(NET_LIBS) $(LIBS),))
 $(eval $(call test_schema,test-renderer-model,test-assets $(WC3_DIR)/renderer/mdx/r_mdx_geoset.c $(SHARED_LIB) $(SHEET_LIB),$(TEST_CFLAGS) -Wno-unused-function -DBZ_TESTS -DBZ_MDX_RIBBON_HEADLESS -ffunction-sections -fdata-sections,$(BIN_DIR)/test_renderer_model$(EXE_EXT),tests/test_runner.c renderer/r_random.c tests/test_renderer_model.c tests/test_renderer_game.c tests/test_mdx_geoset.c tests/test_mdx_pose_workers.c common/mpq.c renderer/r_model.c renderer/r_draw.c renderer/r_trail.c $(WC3_DIR)/renderer/mdx/r_mdx_anim.c $(WC3_DIR)/renderer/mdx/r_mdx_interpolation.c $(WC3_DIR)/renderer/mdx/r_mdx_light.c $(WC3_DIR)/renderer/mdx/r_mdx_particles.c $(WC3_DIR)/renderer/mdx/r_mdx_ribbons.c $(WC3_DIR)/renderer/w3m/r_war3map_special.c,$(TEST_GC_SECTIONS) -lsheet -lshared -lm -lz $(LIBS),))
 $(eval $(call test_schema,test-mdx-geoset,$(SHARED_LIB) $(WC3_DIR)/renderer/mdx/r_mdx_geoset.c,$(TEST_CFLAGS) -Wno-unused-function -Wno-unused-variable -ffunction-sections -fdata-sections,$(BIN_DIR)/test_mdx_geoset$(EXE_EXT),tests/test_runner.c tests/test_mdx_material_order.c,$(TEST_GC_SECTIONS) -lshared -lm $(LIBS),))
@@ -449,6 +464,8 @@ test-assets: blpgen mdxgen mpqtool mdxtool | $(TESTS_DIR)
 	@$(BIN_DIR)/mpqtool$(EXE_EXT) -mpq $(TESTS_RES_DIR)/Maps/FrozenThrone/Campaign/NightElfX04.w3x pack \
 		$(TESTS_RES_DIR)/RampTerrain/NightElfX04/war3map.w3e war3map.w3e
 	@echo "[test-assets] packing tests.mpq"
+	@python3 tools/wc3moviegen.py $(TESTS_RES_DIR)/Movies/TutorialIn.mpq
+	@python3 tools/wc3moviegen.py $(TESTS_RES_DIR)/Movies/HumanOp.mpq --audio
 	@python3 tools/wc3fixturegen.py $(TESTS_RES_DIR)/TransportMap
 	@set --; for f in $(TESTS_RES_DIR)/TransportMap/*; do \
 		set -- "$$@" "$$f" "$${f##*/}"; done; \

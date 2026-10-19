@@ -64,6 +64,18 @@ void R_DrawString(int x, int y, cstring_t text) {
     r_draw_string_scaled((float)x, (float)y, text, 1.0f);
 }
 
+/* Games without a media skin still expose a usable native control. */
+void R_DrawDefaultMediaControl(rect_t const *rect, bool pressed) {
+    rect_t scene = R_UISceneRect();
+    size2_t window = R_GetWindowSize();
+    if (!window.width || !window.height) return;
+    R_DrawFill(rect, pressed ? MAKE(color32_t, 90, 90, 90, 255) : MAKE(color32_t, 35, 35, 35, 230));
+    float scale = rect->h / scene.h * window.height / (SYSFONT_DRAW_HEIGHT * 2);
+    float x = ((rect->x - scene.x) + rect->w * 0.5f) / scene.w * window.width;
+    float y = ((rect->y - scene.y) + rect->h * 0.5f) / scene.h * window.height;
+    r_draw_string_scaled(x - 2 * SYSFONT_DRAW_WIDTH * scale, y - SYSFONT_DRAW_HEIGHT * scale * 0.5f, "Skip", scale);
+}
+
 void R_DrawCharScaled(float x, float y, int c, float scale) {
     char text[2] = { (char)c, 0 };
     r_draw_string_scaled(x, y, text, scale);

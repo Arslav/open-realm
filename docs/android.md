@@ -6,6 +6,11 @@ The first target is Warcraft III on an arm64 Android tablet using SDL2 and GLES3
 `make android-probe` builds a standalone production-shader diagnostic.
 `make android-warcraft3` builds the full Warcraft III runtime and a platform MPQ importer.
 Retail game data is supplied by the user and is never included in either APK.
+
+Game APKs include a pinned FFmpeg decoder for campaign movies. Import files from the original
+`Movies/` directory as well as the main archives; AVI movies retain their historical `.mpq` suffix
+and are installed separately under `files/data/Movies/`. See [movie playback](games/warcraft-3/pre-rendered-movies.md)
+for first-launch intros, campaign preludes, source-build options and automated checks.
 See [iPad packaging](https://github.com/corepunch/open-realm/blob/main/packaging/ipad/README.md) for the existing mobile module/source split and
 [renderer platforms](build-and-renderer-platforms.md) for the GLES3 contract.
 

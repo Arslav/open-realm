@@ -60,3 +60,11 @@ ANGLE git hash; pin the official image and binary bytes instead. See the
 [pin and provenance](https://github.com/corepunch/open-realm/blob/main/packaging/android/angle/README.md),
 [renderer selection](renderer-backend.md#android-graphics-api-selection-through-angle)
 and [Android workflow](android.md#selectable-angle-vulkan-experiment).
+
+## Movie decoder builds
+
+`tools/android/build_ffmpeg.py` downloads hash-pinned FFmpeg 8.0.3 source into ignored `build/deps/`
+and builds the five decoder/conversion shared libraries for Android (or the local host for verification).
+No FFmpeg source or binary is checked in. The Android builder packages the libraries, upstream LGPL
+notice and exact source/configuration manifest; game movies remain user data.
+See [movie support and tests](games/warcraft-3/pre-rendered-movies.md) for codecs, startup flow and commands.

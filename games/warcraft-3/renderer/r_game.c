@@ -1,4 +1,5 @@
 #include "games/warcraft-3/common/cursor.h"
+#include "games/warcraft-3/common/ui_constants.h"
 #include "renderer/r_game.h"
 #include "games/warcraft-3/common/wc3_coords.h"
 #include "r_lightning.h"
@@ -31,6 +32,11 @@ static struct { PATHSTR map; texture_t const *image, *icons[3]; mmp_t *mmp; } pr
 
 static texture_t const *minimap_special[WC3_MINIMAP_CONTACT_NEUTRAL_BUILDING + 1];
 static stbIniCache_t minimap_theme, minimap_map_skin;
+static struct { texture_t *images[2][2]; font_t *font; bool tried; } media_skin;
+static cstring_t const media_skin_keys[2][2] = {
+    { "EscMenuButtonBackground", "EscMenuButtonBorder" },
+    { "EscMenuButtonPushedBackground", "EscMenuButtonPushedBorder" },
+};
 
 static cstring_t const preview_art[] = {
     "UI\\Minimap\\minimap-gold.blp",
@@ -908,6 +914,7 @@ void R_LoadAssets(void) {
 }
 
 void R_Init(void) {
+    memset(&media_skin, 0, sizeof(media_skin));
     cursor_model = NULL; cursor_active_model = NULL; cursor_load_attempted = false; cursor_anim = NULL;
     cursor_model_name[0] = 0;
     R_WeatherInit();
@@ -916,6 +923,7 @@ void R_Init(void) {
 }
 
 void R_Shutdown(void) {
+    memset(&media_skin, 0, sizeof(media_skin));
     MDLX_ShutdownModelBatches();
     _W3M_ClearMap();
     if (preview.mmp) ri.FS_FreeFile(preview.mmp);
@@ -2410,8 +2418,67 @@ bool R_GetModelAnimationDuration(model_t const *model, cstring_t anim, uint32_t 
     return true;
 }
 
+/* MiscData binds isolated sequence audio separately from the model's EVTS objects. */
+void R_StartModelCinematicSequence(model_t const *model, uint32_t sequence) {
+    stbIniCache_t misc = {0};
+    char section[sizeof(model->mdx->info.name) + sizeof("Sounds")], key[32], path[512];
+    PATHSTR sound_name;
+    cstring_t label;
+    wc3AnimSound_t const *sound;
+    uint32_t count;
+
+    if (!model || model->modeltype != ID_MDLX || !model->mdx || sequence >= (uint32_t)model->mdx->num_sequences) return;
+    if (R_LoadIniCachePath(&misc, "UI\\MiscData.txt") != WC3_INI_LOADED) {
+        fprintf(stderr, "WC3 cinematic: unable to load UI\\MiscData.txt for scene sounds\n");
+        Stb_IniCacheFree(&misc);
+        return;
+    }
+    /* Model cinematics author SceneN sounds outside EVTS, using the MODL name as the section prefix. */
+    snprintf(section, sizeof(section), "%.*sSounds", (int)sizeof(model->mdx->info.name), model->mdx->info.name);
+    snprintf(key, sizeof(key), "Scene%u", sequence);
+    label = Stb_IniCacheFind(&misc, section, key);
+    if (label && *label) {
+        sound_name[0] = 0;
+        sscanf(label + (label[0] == '"'), "%255[^\"]", sound_name);
+        sound = R_W3AnimSound(sound_name);
+        count = R_W3SoundVariantCount(sound);
+        if (!count || !R_W3SoundPath(sound, R_W3PresentationPick(0, sequence, tr.viewDef.time, count), path, sizeof(path)))
+            fprintf(stderr, "WC3 cinematic: unresolved sound '%s' in [%s] %s\n", label, section, key);
+        else ri.PlaySoundAt(path, NULL, MAX(0.0f, MIN(1.0f, sound->volume / 127.0f)));
+    }
+    Stb_IniCacheFree(&misc);
+}
+
 void R_DrawSprite(drawSprite_t const *sprite) {
     MDLX_DrawSpriteInstance(sprite, COLOR32_WHITE);
+}
+
+/* This native media control has no retail FDF frame; use the Esc-menu skin instead of glue ownership. */
+void R_DrawMediaControl(rect_t const *rect, bool pressed) {
+    if (!media_skin.tried) {
+        stbIniCache_t theme = { 0 };
+        media_skin.tried = true;
+        R_LoadIniCachePath(&theme, "UI\\war3skins.txt");
+        FOR_LOOP(state, 2) FOR_LOOP(part, 2) {
+            cstring_t path = Stb_IniCacheFind(&theme, "Default", media_skin_keys[state][part]);
+            if (path && *path) media_skin.images[state][part] = R_LoadTexture(path);
+            else fprintf(stderr, "WC3 movie control: missing skin %s\n", media_skin_keys[state][part]);
+        }
+        cstring_t font = Stb_IniCacheFind(&theme, "Default", "EscMenuTextFont");
+        if (font && *font) media_skin.font = R_LoadFont(font, 14);
+        if (!media_skin.font) fprintf(stderr, "WC3 movie control: missing EscMenuTextFont\n");
+        Stb_IniCacheFree(&theme);
+    }
+    drawBackdrop_t backdrop = { .screen = *rect,
+        .bg = { media_skin.images[pressed][0], COLOR32_WHITE },
+        .edge = { media_skin.images[pressed][1], COLOR32_WHITE },
+        .corner = { .flags = 0xff, .size = 0.01f }, .backgroundSize = 0.256f,
+        .insets = { .left = 0.005f, .right = 0.005f, .top = 0.005f, .bottom = 0.005f },
+        .flags = DRAW_TILE };
+    R_DrawBackdrop(&backdrop);
+    drawText_t text = { .font = media_skin.font, .text = BZ_WC3_CINEMATIC_SKIP_TEXT, .rect = *rect,
+        .color = { 252, 211, 18, 255 }, .halign = FONT_JUSTIFYCENTER, .valign = FONT_JUSTIFYMIDDLE };
+    R_DrawText(&text);
 }
 
 /* Warcraft III can replace the platform cursor with its authored animated MDX cursor. */

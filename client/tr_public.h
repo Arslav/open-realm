@@ -290,6 +290,8 @@ typedef struct {
     texture_t * (*LoadTexture)(cstring_t fileName);
     /* NULL releases the renderer-owned cinematic texture. */
     void (*DrawCinematicFrame)(drawCinematicFrame_t const *frame);
+    /* Native media control; each game's renderer supplies its own skin and label. */
+    void (*DrawMediaControl)(rect_t const *rect, bool pressed);
     model_t * (*LoadModel)(cstring_t filename);
     font_t * (*LoadFont)(cstring_t filename, uint32_t size);
     size2_t (*GetWindowSize)(void);
@@ -321,6 +323,7 @@ typedef struct {
     bool (*SetEntityAnimFrame)(model_t const *model, cstring_t anim, renderEntity_t *entity);
     /* Authored named-sequence duration in milliseconds, when exposed by the model format. */
     bool (*GetModelAnimationDuration)(model_t const *model, cstring_t anim, uint32_t *duration);
+    void (*StartModelCinematicSequence)(model_t const *model, uint32_t sequence);
     void (*DrawText)(drawText_t const *drawText);
     vec2_t (*GetTextSize)(drawText_t const *drawText);
     bool (*GetModelInfo)(model_t *model, modelInfo_t *info);

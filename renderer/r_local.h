@@ -340,6 +340,7 @@ void R_DrawAlphaSurfaces(void);
 void R_RenderFrame(viewDef_t const *viewDef);
 texture_t *R_AllocateTexture(uint32_t width, uint32_t height);
 void R_DrawCinematicFrame(drawCinematicFrame_t const *frame);
+void R_DrawDefaultMediaControl(rect_t const *rect, bool pressed);
 texture_t *R_MakeSysFontTexture(void);
 texture_t *R_MakeLoadingIndicatorTexture(void);
 texture_t *R_MakeSelectionCircleTexture(void);

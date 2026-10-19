@@ -1,6 +1,14 @@
 [QuestIndicatorTimeout]
 QuestIndicatorTimeout=10
 
+[AlternateFinaleSounds]
+Scene1="TestSceneTrack"
+Scene2="MissingSceneTrack"
+Scene3=TestSceneTrack
+
+[ArthasIllidanFightSounds]
+Scene1="FinalCinematic"
+
 [CameraRates]
 Strafe=100
 Forward=200

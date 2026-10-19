@@ -42,6 +42,8 @@ extern void Key_Init(void);
 #define MAX_FS_MAPS 4096
 #define MAX_NUM_ARGVS 64
 #define MAX_ARG_CHARS 1024
+#define FS_TAG_RIFF MAKEFOURCC('R','I','F','F')
+#define FS_TAG_AVI MAKEFOURCC('A','V','I',' ')
 
 static int com_argc;
 static cstring_t com_argv[MAX_NUM_ARGVS + 1];
@@ -760,6 +762,19 @@ static void FS_AddArchiveScanDirectoryEntry(cstring_t name,
                                             bool isFile,
                                             void *userData);
 
+/* Some loose AVI movies carry archive extensions; classify their container before mounting. */
+static bool FS_IsAVIMedia(cstring_t path) {
+    uint8_t bytes[12];
+    uint32_t tags[3] = { 0 };
+    FILE *file = fopen(path, "rb");
+    if (!file) return false;
+    size_t size = fread(bytes, 1, sizeof(bytes), file);
+    fclose(file);
+    if (size != sizeof(bytes)) return false;
+    FOR_LOOP(i, sizeof(bytes)) tags[i / 4] |= (uint32_t)bytes[i] << ((i % 4) * 8);
+    return tags[0] == FS_TAG_RIFF && tags[2] == FS_TAG_AVI;
+}
+
 static void FS_AddArchiveScanEntry(cstring_t name, cstring_t path, bool isDirectory, bool isFile, void *userData) {
     fsArchiveScan_t *scan = userData;
 
@@ -777,6 +792,8 @@ static void FS_AddArchiveScanEntry(cstring_t name, cstring_t path, bool isDirect
         FS_HasExtension(name, ".mpq")
 #endif
         ) {
+        /* AVI is loose media even with an .mpq suffix; malformed archives still report mount errors. */
+        if (FS_IsAVIMedia(path)) return;
         snprintf(scan->paths[scan->count++], sizeof(PATHSTR), "%s", path);
     }
 }
@@ -788,6 +805,34 @@ static void FS_AddArchiveScanDirectory(cstring_t dirname, fsArchiveScan_t *scan)
     FS_ForEachDiskEntry(dirname, FS_AddArchiveScanEntry, scan);
     FS_ForEachDiskEntry(dirname, FS_AddArchiveScanDirectoryEntry, scan);
 }
+
+#ifdef BZ_TESTS
+TEST(fs_media, avi_is_not_an_archive_candidate) {
+    PATHSTR paths[2];
+    fsArchiveScan_t scan = { paths, 2, 0 };
+    cstring_t path = Test_TempPath("movie-archive-scan.mpq");
+    uint8_t header[] = { 'R', 'I', 'F', 'F', 4, 0, 0, 0, 'A', 'V', 'I', ' ' };
+    FILE *file = fopen(path, "wb");
+    T_ASSERT(file != NULL);
+    if (!file) return;
+    T_EQ(fwrite(header, 1, sizeof(header), file), sizeof(header));
+    fclose(file);
+    FS_AddArchiveScanEntry("movie.mpq", path, false, true, &scan);
+    T_EQ(scan.count, 0);
+
+    /* Unknown/corrupt archive candidates still reach the normal MPQ validator. */
+    file = fopen(path, "wb");
+    T_ASSERT(file != NULL);
+    if (!file) return;
+    fputc(0, file);
+    fclose(file);
+    scan.count = 0;
+    FS_AddArchiveScanEntry("archive.mpq", path, false, true, &scan);
+    T_EQ(scan.count, 1);
+    T_STREQ(paths[0], path);
+    remove(path);
+}
+#endif
 
 static void FS_AddArchiveScanDirectoryEntry(cstring_t name,
                                             cstring_t path,

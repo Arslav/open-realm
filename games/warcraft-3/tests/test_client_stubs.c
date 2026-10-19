@@ -193,6 +193,7 @@ void MenuAction(cstring_t action, cstring_t arg) {
 }
 void CL_QueueMovie(cstring_t path) { (void)path; }
 bool CL_MovieActive(void) { return false; }
+bool CL_MovieControlsVisible(void) { return false; }
 void CL_MovieDraw(void) {}
 void CL_MusicSetMap(cstring_t playlist, bool random, int32_t index, uint32_t session_id) { (void)playlist; (void)random; (void)index; (void)session_id; }
 void CL_MusicClearMap(void) {}

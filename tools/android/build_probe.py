@@ -8,6 +8,7 @@ import subprocess
 import time
 import zipfile
 from fetch_angle import CACHE as ANGLE_CACHE, fetch as fetch_angle
+from build_ffmpeg import build as build_ffmpeg, LIBRARIES as MOVIE_LIBRARIES
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = "org.openrealm.probe"
@@ -49,12 +50,14 @@ def main():
         if not path.is_file():
             parser.error(f"Missing build input: {path}; see docs/android.md")
     out.mkdir(parents=True, exist_ok=True)
+    movies = build_ffmpeg(ndk) if args.game else None
     # Share the SDL/native build tree between the independently packaged probe and game APKs.
     native = ROOT / "build/android/probe/native"
     run(["cmake", "-S", ROOT / "packaging/android", "-B", native, "-G", "Unix Makefiles",
          f"-DCMAKE_TOOLCHAIN_FILE={ndk}/build/cmake/android.toolchain.cmake", "-DANDROID_ABI=arm64-v8a",
          "-DANDROID_PLATFORM=android-26", "-DCMAKE_BUILD_TYPE=RelWithDebInfo", f"-DSDL_SOURCE_DIR={sdl}",
-         f"-DBZ_ANDROID_GAME={'ON' if args.game else 'OFF'}", f"-DBZ_ANGLE_VULKAN={'ON' if angle else 'OFF'}"])
+         f"-DBZ_ANDROID_GAME={'ON' if args.game else 'OFF'}", f"-DBZ_ANGLE_VULKAN={'ON' if angle else 'OFF'}",
+         f"-DFFMPEG_ROOT={movies or ''}"])
     run(["cmake", "--build", native, "--target", *( ["warcraft3", "mpqcheck"] if args.game else ["main"] ),
          "--parallel", "3"])
     classes, dex = out / "classes", out / "dex"
@@ -89,6 +92,11 @@ def main():
             libraries.append((f"lib{name}.so", native / f"lib{name}.so"))
         for name, source in libraries:
             apk.write(source, f"lib/arm64-v8a/{name}")
+        if movies:
+            for name in MOVIE_LIBRARIES:
+                apk.write(movies / 'lib' / f'lib{name}.so', f'lib/arm64-v8a/lib{name}.so')
+            for name in ('COPYING.LGPLv2.1', 'manifest.json'):
+                apk.write(movies / name, f'assets/share/ffmpeg/{name}')
         if angle:
             for name in ("libEGL_angle.so", "libGLESv2_angle.so"):
                 apk.write(angle / name, f"lib/arm64-v8a/{name}")

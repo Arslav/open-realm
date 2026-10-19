@@ -2,6 +2,10 @@
 void R_TestPoseFlush(void);
 void R_TestMinimapBatch(drawImageBatchParams_t const *p);
 void R_TestMinimapImage(texture_t const *tex, rect_t const *screen, rect_t const *uv, color32_t color);
+texture_t *R_TestMediaTexture(cstring_t path);
+font_t *R_TestMediaFont(cstring_t path, uint32_t size);
+void R_TestMediaBackdrop(drawBackdrop_t const *draw);
+void R_TestMediaText(drawText_t const *draw);
 #define glFlush R_TestPoseFlush
 /* Compile the WC3 game renderer into the headless renderer test. Function
  * sections let the linker retain R_RegisterMap and its dependencies without
@@ -22,7 +26,15 @@ void R_TestMinimapImage(texture_t const *tex, rect_t const *screen, rect_t const
 #define R_WeatherEmit R_TestWeatherEmit
 #define R_DrawImage R_TestMinimapImage
 #define R_DrawImageBatchEx R_TestMinimapBatch
+#define R_LoadTexture R_TestMediaTexture
+#define R_LoadFont R_TestMediaFont
+#define R_DrawBackdrop R_TestMediaBackdrop
+#define R_DrawText R_TestMediaText
 #include "../games/warcraft-3/renderer/r_game.c"
+#undef R_LoadTexture
+#undef R_LoadFont
+#undef R_DrawBackdrop
+#undef R_DrawText
 #undef glFlush
 #undef MDLX_TraceWalkableSurface
 #undef MDLX_SetEntityAnimationFrame
@@ -53,9 +65,17 @@ static uint32_t test_spn_render_count;
 static renderEntity_t test_spn_render_entity;
 static mat4_t test_spn_render_transform;
 static handle_t test_renderer_archive;
+static bool test_media_capture;
+static texture_t test_media_images[3];
+static drawBackdrop_t test_media_backdrop;
+static drawText_t test_media_text;
+static PATHSTR test_media_font;
+static uint32_t test_media_font_size;
 static char test_sound_path[512];
 static vec3_t test_sound_origin;
 static uint32_t test_sound_count;
+static bool test_sound_positioned;
+static float test_sound_volume;
 static uint32_t test_splat_count;
 static vec2_t test_splat_origin;
 static float test_splat_radius;
@@ -296,6 +316,22 @@ TEST(renderer_game, entity_camera_event_state_invalidates_when_model_has_no_even
 static handle_t test_renderer_alloc(long size) { return calloc(1, (size_t)size); }
 static void test_renderer_free(handle_t ptr) { free(ptr); }
 
+/* Capture production skin submission while leaving other renderer tests' texture loader intact. */
+texture_t *R_TestMediaTexture(cstring_t path) {
+    cstring_t const names[] = { "TestUI\\Textures\\checker_8x8.blp", "TestUI\\Textures\\solid_white.blp",
+        "TestUI\\Textures\\panel_border_32x32.blp" };
+    if (!test_media_capture) return R_LoadTexture(path);
+    FOR_LOOP(i, sizeof(names) / sizeof(names[0]))
+        if (!strcmp(path, names[i])) return test_media_images + i;
+    T_ASSERT(false); return NULL;
+}
+font_t *R_TestMediaFont(cstring_t path, uint32_t size) {
+    snprintf(test_media_font, sizeof(test_media_font), "%s", path); test_media_font_size = size;
+    return (font_t *)(uintptr_t)1;
+}
+void R_TestMediaBackdrop(drawBackdrop_t const *draw) { test_media_backdrop = *draw; }
+void R_TestMediaText(drawText_t const *draw) { test_media_text = *draw; }
+
 /* Removing a middle entry compacts the table; its old tail must not seed a new camera. */
 TEST(renderer_game, reused_camera_event_slot_starts_with_fresh_clock) {
     refImport_t saved = ri;
@@ -330,6 +366,29 @@ static int test_renderer_read(cstring_t path, void **buffer) {
     return (int)size;
 }
 
+TEST(renderer_game, media_control_uses_authored_normal_pressed_skin_and_localized_label) {
+    refImport_t saved = ri;
+    __typeof__(media_skin) skin = media_skin;
+    rect_t rect = { 0.61f, 0.02f, 0.16f, 0.045f };
+    T_ASSERT(SFileOpenArchive("build/tests/tests.mpq", 0, 0, &test_renderer_archive));
+    if (!test_renderer_archive) return;
+    ri.FS_ReadFile = test_renderer_read; ri.FS_FreeFile = test_renderer_free;
+    ri.MemAlloc = test_renderer_alloc; ri.MemFree = test_renderer_free;
+    memset(&media_skin, 0, sizeof(media_skin)); test_media_capture = true;
+    R_DrawMediaControl(&rect, false);
+    T_ASSERT(test_media_backdrop.bg.texture == test_media_images);
+    T_ASSERT(test_media_backdrop.edge.texture == test_media_images + 2);
+    T_STREQ(test_media_font, "Fonts\\FRIZQT__.TTF"); T_ASSERT(test_media_font_size > 0);
+    T_STREQ(test_media_text.text, "Пропустить"); T_ASSERT(test_media_text.font != NULL);
+    T_FEQ(test_media_text.rect.x, rect.x, 0.0001f); T_FEQ(test_media_text.rect.y, rect.y, 0.0001f);
+    T_EQ(test_media_text.halign, FONT_JUSTIFYCENTER); T_EQ(test_media_text.valign, FONT_JUSTIFYMIDDLE);
+    R_DrawMediaControl(&rect, true);
+    T_ASSERT(test_media_backdrop.bg.texture == test_media_images + 1);
+    T_ASSERT(test_media_backdrop.edge.texture == test_media_images + 2);
+    SFileCloseArchive(test_renderer_archive); test_renderer_archive = NULL;
+    test_media_capture = false; media_skin = skin; ri = saved;
+}
+
 static uint32_t test_renderer_load_slk(cstring_t path, slkField_t const *schema,
                                     void **rows, uint32_t row_stride) {
     void *buffer = NULL;
@@ -340,10 +399,41 @@ static uint32_t test_renderer_load_slk(cstring_t path, slkField_t const *schema,
 }
 
 static void test_renderer_play_sound(cstring_t path, vec3_t const *origin, float volume) {
-    (void)volume;
+    test_sound_volume = volume; test_sound_positioned = origin != NULL;
     snprintf(test_sound_path, sizeof(test_sound_path), "%s", path);
-    test_sound_origin = *origin;
+    test_sound_origin = origin ? *origin : (vec3_t){0};
     test_sound_count++;
+}
+
+TEST(renderer_game, cinematic_scene_sound_uses_misc_model_name_and_animsounds) {
+    refImport_t saved = ri;
+    wc3AnimSound_t *old_rows = anim_sound_rows;
+    uint32_t old_count = anim_sound_count;
+    mdxModel_t mdx = { .info.name = "AlternateFinale", .num_sequences = 4 };
+    model_t model = { .modeltype = ID_MDLX, .mdx = &mdx };
+    T_ASSERT(SFileOpenArchive("build/tests/tests.mpq", 0, 0, &test_renderer_archive));
+    if (!test_renderer_archive) return;
+    ri.FS_ReadFile = test_renderer_read; ri.FS_FreeFile = test_renderer_free;
+    ri.MemAlloc = test_renderer_alloc; ri.MemFree = test_renderer_free;
+    ri.PlaySoundAt = test_renderer_play_sound;
+    anim_sound_count = test_renderer_load_slk("UI\\SoundInfo\\AnimSounds.slk", anim_sound_schema,
+                                             (void **)&anim_sound_rows, sizeof(wc3AnimSound_t));
+    T_EQ(anim_sound_count, 2u); test_sound_count = 0;
+    R_StartModelCinematicSequence(&model, 0); T_EQ(test_sound_count, 0u);
+    R_StartModelCinematicSequence(&model, 1); T_EQ(test_sound_count, 1u);
+    T_STREQ(test_sound_path, "Sound\\Cinematic\\alternate-scene.mp3");
+    T_ASSERT(!test_sound_positioned); T_FEQ(test_sound_volume, 0.5f, 0.001f);
+    R_StartModelCinematicSequence(&model, 2); T_EQ(test_sound_count, 1u);
+    R_StartModelCinematicSequence(&model, 3); T_EQ(test_sound_count, 2u);
+    snprintf(mdx.info.name, sizeof(mdx.info.name), "ArthasIllidanFight");
+    R_StartModelCinematicSequence(&model, 1); T_EQ(test_sound_count, 3u);
+    T_STREQ(test_sound_path, "Sound\\Ambient\\DoodadEffects\\FinalCinematic.mp3");
+    T_FEQ(test_sound_volume, 1.0f, 0.001f);
+    snprintf(mdx.info.name, sizeof(mdx.info.name), "UnscoredModel");
+    R_StartModelCinematicSequence(&model, 1); T_EQ(test_sound_count, 3u);
+    FS_SLKFreeRows(anim_sound_schema, anim_sound_rows, anim_sound_count, sizeof(wc3AnimSound_t));
+    anim_sound_rows = old_rows; anim_sound_count = old_count;
+    SFileCloseArchive(test_renderer_archive); test_renderer_archive = NULL; ri = saved;
 }
 
 void R_GetEntityMatrix(renderEntity_t const *entity, mat4_t *matrix) {

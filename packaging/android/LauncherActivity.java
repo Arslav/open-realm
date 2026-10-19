@@ -41,7 +41,7 @@ public class LauncherActivity extends Activity {
         status.setTextSize(18);
         panel.addView(status);
         choose = new Button(this);
-        choose.setText("Import Warcraft III MPQs");
+        choose.setText("Import Warcraft III archives and movies");
         choose.setOnClickListener(view -> {
             Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT);
             picker.setType("*/*");
@@ -68,7 +68,7 @@ public class LauncherActivity extends Activity {
     private void updateStatus() {
         File data = dataDirectory();
         boolean base = new File(data, "war3.mpq").isFile();
-        status.setText(base ? "War3.mpq is installed. Import additional language or expansion MPQs as needed."
+        status.setText(base ? "War3.mpq is installed. You can also import expansion archives and files from the Movies folder."
             : "Import your classic Warcraft III archives. War3.mpq is required. Game data is not included.");
         choose.setEnabled(!busy);
         roc.setEnabled(base && !busy);
@@ -100,7 +100,8 @@ public class LauncherActivity extends Activity {
                     try (Cursor cursor = getContentResolver().query(uri,
                             new String[] { OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE }, null, null, null)) {
                         if (cursor == null || !cursor.moveToFirst()) throw new IOException("Cannot read selected file metadata");
-                        name = ArchiveStore.archiveName(cursor.getString(0));
+                        name = cursor.getString(0);
+                        ArchiveStore.assetName(name);
                         if (!cursor.isNull(1)) size = cursor.getLong(1);
                     }
                     final String current = name;
@@ -136,10 +137,12 @@ public class LauncherActivity extends Activity {
         final int scale = getIntent().getIntExtra("scale", 67);
         final int profile = getIntent().getIntExtra("profile", 0), particles = getIntent().getIntExtra("particles", -1);
         final String map = getIntent().getStringExtra("map");
+        final String movie = getIntent().getStringExtra("movie");
         final String backend = getIntent().getStringExtra("backend");
         getIntent().removeExtra("frames");
         getIntent().removeExtra("scale");
         getIntent().removeExtra("map");
+        getIntent().removeExtra("movie");
         getIntent().removeExtra("profile");
         getIntent().removeExtra("particles");
         getIntent().removeExtra("backend");
@@ -157,6 +160,7 @@ public class LauncherActivity extends Activity {
                     game.putExtra("profile", profile);
                     game.putExtra("particles", particles);
                     if (map != null) game.putExtra("map", map);
+                    if (movie != null) game.putExtra("movie", movie);
                     if (backend != null) game.putExtra("backend", backend);
                     startActivity(game);
                     busy = false;

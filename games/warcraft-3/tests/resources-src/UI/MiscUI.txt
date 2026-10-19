@@ -1,0 +1,3 @@
+[Misc]
+CreditsFile_V0="Maps\Campaign\AlternateCredits.w3m"
+CreditsFile_V1="Maps\FrozenThrone\Campaign\AlternateCreditsIce.w3x"

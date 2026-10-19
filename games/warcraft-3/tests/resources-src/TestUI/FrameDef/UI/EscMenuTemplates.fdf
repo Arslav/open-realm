@@ -1,1 +1,153 @@
-// Minimal synthetic fixture. Tests only need this file to exist.
+/*
+ *  EscMenuTemplates.fdf
+ *  ---------------------
+ *  These are EscMenu templates to be inherited by most components
+ *  in the in-game menus.
+ */
+
+// --- BUTTON -----------------------------------------------------------------------
+
+Frame "BACKDROP" "EscMenuButtonBackdropTemplate" {
+    DecorateFileNames,
+    BackdropTileBackground,
+    BackdropBackground  "EscMenuButtonBackground",
+    BackdropCornerFlags "UL|UR|BL|BR|T|L|B|R",
+    BackdropCornerSize  0.0125,
+    BackdropBackgroundSize  0.256,
+    BackdropBackgroundInsets 0.005 0.005 0.005 0.005,
+    BackdropEdgeFile  "EscMenuButtonBorder",
+}
+
+Frame "BACKDROP" "EscMenuButtonPushedBackdropTemplate" {
+    DecorateFileNames,
+    BackdropTileBackground,
+    BackdropBackground  "EscMenuButtonPushedBackground",
+    BackdropCornerFlags "UL|UR|BL|BR|T|L|B|R",
+    BackdropCornerSize  0.0125,
+    BackdropBackgroundSize  0.256,
+    BackdropBackgroundInsets 0.005 0.005 0.005 0.005,
+    BackdropEdgeFile  "EscMenuButtonPushedBorder",
+}
+
+Frame "BACKDROP" "EscMenuButtonDisabledBackdropTemplate" {
+    DecorateFileNames,
+    BackdropTileBackground,
+    BackdropBackground  "EscMenuButtonDisabledBackground",
+    BackdropCornerFlags "UL|UR|BL|BR|T|L|B|R",
+    BackdropCornerSize  0.0125,
+    BackdropBackgroundSize  0.256,
+    BackdropBackgroundInsets 0.005 0.005 0.005 0.005,
+    BackdropEdgeFile  "EscMenuButtonDisabledBorder",
+}
+
+Frame "BACKDROP" "EscMenuButtonDisabledPushedBackdropTemplate" {
+    DecorateFileNames,
+    BackdropTileBackground,
+    BackdropBackground  "EscMenuButtonDisabledPushedBackground",
+    BackdropCornerFlags "UL|UR|BL|BR|T|L|B|R",
+    BackdropCornerSize  0.0125,
+    BackdropBackgroundSize  0.256,
+    BackdropBackgroundInsets 0.005 0.005 0.005 0.005,
+    BackdropEdgeFile  "EscMenuButtonDisabledPushedBorder",
+}
+
+Frame "BACKDROP" "EscMenuControlBackdropTemplate" {
+    DecorateFileNames,
+    BackdropTileBackground,
+    BackdropBackground  "EscMenuEditBoxBackground",
+    BackdropCornerFlags "UL|UR|BL|BR|T|L|B|R",
+    BackdropCornerSize  0.0125,
+    BackdropBackgroundSize  0.256,
+    BackdropBackgroundInsets 0.005 0.005 0.005 0.005,
+    BackdropEdgeFile  "EscMenuEditBoxBorder",
+    BackdropBlendAll,
+}
+
+Frame "HIGHLIGHT" "EscMenuButtonMouseOverHighlightTemplate" {
+    DecorateFileNames,
+    HighlightType "FILETEXTURE",
+    HighlightAlphaFile "EscMenuButtonMouseOverHighlight",
+    HighlightAlphaMode "ADD",
+}
+
+Frame "GLUETEXTBUTTON" "EscMenuButtonTemplate" {
+    Width 0.228,
+    Height 0.035,
+    ControlStyle "AUTOTRACK|HIGHLIGHTONMOUSEOVER",
+    ButtonPushedTextOffset 0.002f -0.002f,
+
+    ControlBackdrop "ButtonBackdropTemplate",
+    Frame "BACKDROP" "ButtonBackdropTemplate" INHERITS "EscMenuButtonBackdropTemplate" {
+    }
+
+    ControlPushedBackdrop "ButtonPushedBackdropTemplate",
+    Frame "BACKDROP" "ButtonPushedBackdropTemplate" INHERITS "EscMenuButtonPushedBackdropTemplate" {
+    }
+
+    ControlDisabledBackdrop "ButtonDisabledBackdropTemplate",
+    Frame "BACKDROP" "ButtonDisabledBackdropTemplate" INHERITS "EscMenuButtonDisabledBackdropTemplate" {
+    }
+
+    ControlDisabledPushedBackdrop "ButtonDisabledPushedBackdropTemplate",
+    Frame "BACKDROP" "ButtonDisabledPushedBackdropTemplate" INHERITS "EscMenuButtonDisabledPushedBackdropTemplate" {
+    }
+
+    ControlMouseOverHighlight "ButtonMouseOverHighlightTemplate",
+    Frame "HIGHLIGHT" "ButtonMouseOverHighlightTemplate" INHERITS "EscMenuButtonMouseOverHighlightTemplate" {
+    }
+}
+
+// --- TEXT -----------------------------------------------------------------------
+
+Frame "TEXT" "EscMenuButtonTextTemplate" {
+    DecorateFileNames,
+    FrameFont "EscMenuTextFont", 0.013, "",
+    FontJustificationH JUSTIFYCENTER,
+    FontJustificationV JUSTIFYMIDDLE,
+    FontJustificationOffset 0.0 -0.002,
+    FontFlags "FIXEDSIZE",
+    FontColor 0.99 0.827 0.0705 1.0,
+    FontHighlightColor 1.0 1.0 1.0 1.0,
+    FontDisabledColor 0.5 0.5 0.5 1.0,
+	FontShadowColor 0.0 0.0 0.0 0.9,
+    FontShadowOffset 0.002 -0.002,
+}
+
+Frame "TEXT" "EscMenuInfoTextTemplate" {
+    DecorateFileNames,
+    FrameFont "EscMenuTextFont", 0.011, "",
+    FontJustificationH JUSTIFYCENTER,
+    FontJustificationV JUSTIFYMIDDLE,
+    FontFlags "FIXEDSIZE",
+    FontColor 0.99 0.827 0.0705 1.0,
+    FontHighlightColor 1.0 1.0 1.0 1.0,
+    FontDisabledColor 0.5 0.5 0.5 1.0,
+	FontShadowColor 0.0 0.0 0.0 0.9,
+    FontShadowOffset 0.002 -0.002,
+}
+
+Frame "TEXT" "EscMenuTitleTextTemplate" {
+    DecorateFileNames,
+    FrameFont "EscMenuTextFont", 0.015, "",
+    FontJustificationH JUSTIFYLEFT,
+    FontJustificationV JUSTIFYMIDDLE,
+    FontFlags "FIXEDSIZE",
+    FontColor 0.99 0.827 0.0705 1.0,
+    FontHighlightColor 1.0 1.0 1.0 1.0,
+    FontDisabledColor 0.2 0.2 0.2 1.0,
+	FontShadowColor 0.0 0.0 0.0 0.9,
+    FontShadowOffset 0.002 -0.002,
+}
+
+Frame "TEXT" "EscMenuLabelTextTemplate" {
+    DecorateFileNames,
+    FrameFont "EscMenuTextFont", 0.011, "",
+    FontJustificationH JUSTIFYLEFT,
+    FontJustificationV JUSTIFYMIDDLE,
+    FontFlags "FIXEDSIZE",
+    FontColor 0.99 0.827 0.0705 1.0,
+    FontHighlightColor 1.0 1.0 1.0 1.0,
+    FontDisabledColor 0.2 0.2 0.2 1.0,
+	FontShadowColor 0.0 0.0 0.0 0.9,
+    FontShadowOffset 0.002 -0.002,
+}

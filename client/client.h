@@ -194,6 +194,8 @@ bool CL_MovieActive(void);
 void CL_MovieUpdate(void);
 void CL_MovieDraw(void);
 bool CL_MovieKeyEvent(keyCode_t key, bool down);
+bool CL_MovieControlsVisible(void);
+void CL_MovieMouseEvent(menuMouseEvent_t event, int x, int y);
 void CL_MovieShutdown(void);
 void CL_MovieCancel(void);
 vec2_t CL_ClampCameraPosition(vec2_t position);

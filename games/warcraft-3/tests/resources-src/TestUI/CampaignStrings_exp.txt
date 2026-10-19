@@ -6,6 +6,7 @@ Header="Sentinels Campaign"
 Name="Terror of the Tides"
 Background="NightElfBackdrop"
 Cursor=3
+EndCinematic="Cinematic","Alternate Sentinels Ending","AlternateSentinelsEnding"
 Mission0="Chapter One","Rise of the Naga","Maps\FrozenThrone\Campaign\NightElfX01.w3x"
 
 [Human]
@@ -31,7 +32,10 @@ Header="Scourge Campaign"
 Name="Legacy of the Damned"
 Background="UndeadBackdrop"
 Cursor=2
+EndCinematic="Cinematic","Undead Ending","AlternateEnding"
 Mission0="Chapter One","King Arthas","Maps\FrozenThrone\Campaign\UndeadX01.w3x"
+Mission1="Finale","Alternate Finale","Doodads\Cinematic\AlternateFinale\AlternateFinale.mDl"
+Mission2="Epilogue","Alternate Epilogue","Doodads\Cinematic\AlternateEpilogue\AlternateEpilogue.MDX"
 
 [Orc]
 Header="Bonus Campaign"

@@ -770,6 +770,14 @@ void CL_Input(void) {
         }
         if (movie_input) {
             switch (event.type) {
+                case SDL_MOUSEBUTTONDOWN:
+                case SDL_MOUSEBUTTONUP:
+                    /* First tap reveals media controls; only their subsequent press can skip. */
+                    mouse.origin = (vec2_t){ event.button.x, event.button.y };
+                    if (event.button.button == SDL_BUTTON_LEFT)
+                        CL_MovieMouseEvent(event.type == SDL_MOUSEBUTTONDOWN ? MENU_MOUSE_DOWN : MENU_MOUSE_UP,
+                                           event.button.x, event.button.y);
+                    break;
                 case SDL_KEYDOWN:
                     CL_InputKeyEvent(CL_SDLKeyToKeyCode(event.key.keysym.sym),
                                      CL_BindMods(event.key.keysym.mod), true, event.key.timestamp);
@@ -781,8 +789,11 @@ void CL_Input(void) {
                 case SDL_MOUSEMOTION:
                     mouse.origin.x = event.motion.x;
                     mouse.origin.y = event.motion.y;
+                    CL_MovieMouseEvent(MENU_MOUSE_MOVE, event.motion.x, event.motion.y);
                     break;
                 case SDL_WINDOWEVENT:
+                    if (event.window.event == SDL_WINDOWEVENT_FOCUS_LOST)
+                        CL_MovieMouseEvent(MENU_MOUSE_MOVE, -1, -1);
                     if (CL_WindowEvent(&event.window)) return;
                     break;
                 default:

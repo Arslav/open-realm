@@ -577,6 +577,8 @@ bool R_GetModelAnimationDuration(model_t const *model, cstring_t anim, uint32_t 
     return false;
 }
 
+void R_StartModelCinematicSequence(model_t const *model, uint32_t sequence) { (void)model; (void)sequence; }
+
 void R_DrawSprite(drawSprite_t const *sprite) {
     (void)sprite;
 }
@@ -586,3 +588,5 @@ bool R_DrawCursor(drawCursor_t const *cursor) {
     (void)cursor;
     return false;
 }
+
+void R_DrawMediaControl(rect_t const *rect, bool pressed) { R_DrawDefaultMediaControl(rect, pressed); }

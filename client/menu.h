@@ -105,6 +105,8 @@ typedef struct {
 
     /* Full-screen pre-rendered movie playback. Returns false when unsupported or unavailable. */
     bool (*PlayMovie)(cstring_t path);
+    void (*PlayMovieBeforeMap)(cstring_t path, cstring_t map); /* EOF/skip/failure continues the chosen map. */
+    void (*QueueModelCinematic)(cstring_t path); /* Deferred isolated model playback; preserves the menu. */
 } menuImport_t;
 
 /* Function table exported by the menu library to the client. */
