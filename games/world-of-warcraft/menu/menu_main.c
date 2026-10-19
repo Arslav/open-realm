@@ -440,6 +440,7 @@ menuExport_t M_GetAPI(menuImport_t import) {
         .Refresh          = UIWow_Refresh,
         .KeyEvent         = UIWow_KeyEvent,
         .TextInput        = UIWow_TextInput,
+        .TextInputActive  = UIWow_XMLTextInputActive,
         .MouseEvent       = UIWow_MouseEvent,
         .UpdateLobbySetup = UIWow_UpdateLobbySetup,
     };

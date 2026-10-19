@@ -165,6 +165,8 @@ static void UI_InstallScreen(uiScreen_t *screen) {
     fprintf(stderr, "UI_SetScreen: %s -> %s\n", ui_current_screen ? ui_current_screen->name : "(null)", screen ? screen->name : "(null)");
     if (ui_current_screen && ui_current_screen->shutdown) ui_current_screen->shutdown();
     ui_current_screen = screen;
+    /* An outgoing screen's edit box must not regain platform text focus after the transition. */
+    UI_ClearEditFocus();
     menu_pressed_frame = NULL;
     menu_popup_pressed = false;
     UI_UpdateMenuMusic(screen);
@@ -464,6 +466,11 @@ void M_TextInput(cstring_t text) {
     UI_EditTextInput(text);
 }
 
+/* Retained edit focus must not request a software keyboard while glue is inactive or transitioning. */
+bool M_TextInputActive(void) {
+    return ui_state.active && !M_IsTransitioning() && UI_GetCurrentScreen() && UI_EditActive();
+}
+
 void M_KeyEvent(int key, uint32_t mods, bool down, uint32_t time) {
     (void)time;
 
@@ -700,6 +707,7 @@ menuExport_t M_GetAPI(menuImport_t import) {
     exp.Refresh = M_Refresh;
     exp.KeyEvent = M_KeyEvent;
     exp.TextInput = M_TextInput;
+    exp.TextInputActive = M_TextInputActive;
     exp.MouseEvent = M_MouseEvent;
     exp.UpdateLobbySetup = M_UpdateLobbySetup;
     

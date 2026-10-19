@@ -1228,6 +1228,12 @@ static void UIWow_XMLEditDelete(uiWowXmlElem_t *e) {
         e->measured = MAKE(fsize_t, 0, 0);
 }
 
+/* Hidden screens can retain a focus index; only a visible edit box owns platform text input. */
+bool UIWow_XMLTextInputActive(void) {
+    return wow_xml.focus >= 0 && wow_xml.focus < wow_xml.count &&
+        wow_xml.elems[wow_xml.focus].type == WOW_XML_EDITBOX && UIWow_XMLIsVisible(wow_xml.focus);
+}
+
 bool UIWow_XMLTextInput(cstring_t text) {
     uiWowXmlElem_t *e;
     if (wow_xml.focus < 0 || wow_xml.focus >= wow_xml.count || !text || !*text) return false;

@@ -666,6 +666,8 @@ bool UI_EditHasFocus(frameDef_t const *frame) {
     return active_edit && active_edit == frame;
 }
 
+bool UI_EditActive(void) { return active_edit != NULL; }
+
 cstring_t UI_EditValue(frameDef_t const *frame) {
     return UI_EditText(frame);
 }

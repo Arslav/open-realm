@@ -997,6 +997,7 @@ void CL_Input(void) {
     CL_FlushTouchMotion();
     if (hover_update_pending) CL_UpdateHover((float)hover_motion.x, (float)hover_motion.y);
     CL_InputFrame();
+    CL_UpdateTextInput();
 }
 
 static void CL_SetSDLTextInput(bool enabled) {
@@ -1015,9 +1016,18 @@ void CL_SetTransientTextInput(bool enabled) {
     CL_SetSDLTextInput(enabled);
 }
 
+/* Keep the platform keyboard with the focused control, including after menu navigation and console dismissal. */
+void CL_UpdateTextInput(void) {
+    bool enabled = cls.key_dest == key_console;
+    if (cls.key_dest == key_menu && CL_MenuActive()) enabled = menu.TextInputActive();
+    if (cls.key_dest == key_game) enabled = CL_WindowTextInputActive();
+    CL_SetSDLTextInput(enabled);
+}
+
 void CL_SetMenuBindings(void) {
     cls.key_dest = key_menu;
-    CL_SetSDLTextInput(true);
+    /* Entering glue used to open the software keyboard even on screens without an edit box. */
+    CL_SetSDLTextInput(false);
 }
 
 void CL_SetGameplayInput(void) {
@@ -1906,6 +1916,56 @@ static bool CL_TestMenuMouse(menuMouseEvent_t event, int x, int y, int32_t param
 }
 static void CL_TestMenuText(cstring_t text) { (void)text; test_menu_text++; }
 static void CL_TestMenuKey(int key, uint32_t mods, bool down, uint32_t time) { (void)key; (void)mods; (void)down; (void)time; test_menu_keys++; }
+static bool test_menu_edit;
+static bool CL_TestMenuTextActive(void) { return test_menu_edit; }
+
+TEST(client_input, return_to_menu_without_edit_focus_keeps_keyboard_closed) {
+    struct client_static old_cls = cls;
+    menuExport_t old_menu = menu;
+    __typeof__(input) old_input = input;
+    mouseEvent_t old_mouse = mouse;
+    uint32_t old_ui = cl.playerstate.client_ui_state;
+    bool old_text = SDL_IsTextInputActive();
+    T_EQ(SDL_InitSubSystem(SDL_INIT_EVENTS), 0);
+    SDL_FlushEvents(SDL_FIRSTEVENT, SDL_LASTEVENT);
+    menu.TextInputActive = CL_TestMenuTextActive;
+    test_menu_edit = false;
+    cls.state = ca_disconnected; cls.key_dest = key_game;
+    cl.playerstate.client_ui_state = CLIENT_UI_GAME;
+    input = (__typeof__(input)){0};
+    SDL_StartTextInput();
+    CL_SetMenuBindings();
+    T_EQ(cls.key_dest, key_menu);
+    T_ASSERT(!SDL_IsTextInputActive());
+    CON_ToggleConsole(); CON_ToggleConsole();
+    T_ASSERT(!SDL_IsTextInputActive());
+    test_menu_edit = true;
+    CL_Input();
+    T_ASSERT(SDL_IsTextInputActive());
+    CON_ToggleConsole(); CON_ToggleConsole();
+    T_ASSERT(SDL_IsTextInputActive());
+    test_menu_edit = false;
+    CL_Input();
+    T_ASSERT(!SDL_IsTextInputActive());
+    test_menu_edit = true;
+    cls.state = ca_active;
+    CL_Input();
+    T_ASSERT(!SDL_IsTextInputActive());
+    cls.state = ca_connected;
+    cl.playerstate.client_ui_state = CLIENT_UI_LOADING;
+    CL_Input();
+    T_ASSERT(!SDL_IsTextInputActive());
+    CON_ToggleConsole();
+    T_ASSERT(SDL_IsTextInputActive());
+    CON_ToggleConsole();
+    T_EQ(cls.key_dest, key_menu);
+    T_ASSERT(!SDL_IsTextInputActive());
+    if (old_text) SDL_StartTextInput();
+    else SDL_StopTextInput();
+    SDL_QuitSubSystem(SDL_INIT_EVENTS);
+    cls = old_cls; menu = old_menu; input = old_input; mouse = old_mouse; cl.playerstate.client_ui_state = old_ui;
+}
+
 TEST(client_input, menu_sdl_input_is_exclusive_with_world_presentation) {
     struct client_state *old = MemAlloc(sizeof(cl));
     struct client_static old_cls = cls;
@@ -1925,6 +1985,7 @@ TEST(client_input, menu_sdl_input_is_exclusive_with_world_presentation) {
     memcpy(old, &cl, sizeof(cl)); memset(&cl, 0, sizeof(cl));
     input = (__typeof__(input)){0}; cls.key_dest = key_menu;
     menu.MouseEvent = CL_TestMenuMouse; menu.TextInput = CL_TestMenuText; menu.KeyEvent = CL_TestMenuKey;
+    menu.TextInputActive = CL_TestMenuTextActive; test_menu_edit = false;
     re.GetWindowSize = CL_TestWindowSize;
     strlcpy(click_bind, Key_GetBinding(K_MOUSE1, 0), sizeof(click_bind));
     strlcpy(key_bind, Key_GetBinding(K_F12, 0), sizeof(key_bind));

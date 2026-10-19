@@ -5,7 +5,7 @@ OpenWarcraft3 uses a client-side UI library with a clear split between **menu/gl
 ## Module Boundary
 
 `menuImport_t` provides filesystem, renderer, sound, and glue command services. `menuExport_t` exposes only
-`Init`, `Shutdown`, `Refresh`, `KeyEvent`, `TextInput`, `MouseEvent`, and `UpdateLobbySetup`.
+`Init`, `Shutdown`, `Refresh`, `KeyEvent`, `TextInput`, `TextInputActive`, `MouseEvent`, and `UpdateLobbySetup`.
 There is no player/selected-unit state or gameplay resource-resolution API.
 
 The game authors HUD and in-game dialogs through `svc_layout` and `svc_window`. The client binds replicated state,
@@ -29,6 +29,26 @@ Disconnect/return-to-menu calls Init again; repeated map loads do not double-shu
 suspended state also keeps dedicated clients out of this lifecycle. The engine command table retains callback
 pointers to the loaded library. Actual DLL unloading would additionally require command unregistration and reload
 support; it is unnecessary for exclusive execution.
+
+## Platform Text Input
+
+`key_menu` selects menu key routing; it does not imply a text editor owns focus. `CL_SetMenuBindings()` stops SDL text
+input on entry. At the end of `CL_Input()`, `CL_UpdateTextInput()` enables it only for the console, a focused gameplay
+window edit box, or an active menu whose mandatory `TextInputActive()` export reports an interactive edit control.
+Console dismissal uses the same owner query. SDL sessions change only when the active state changes, preserving IME
+composition across ordinary input frames.
+
+Starting text input unconditionally from `CL_SetMenuBindings()` previously opened the mobile software keyboard when
+leaving a mission for campaign selection. The client now consumes only the menu's focus result; it has no screen-specific
+rules. WC3 suppresses the result during transitions and clears edit focus when replacing screens. WoW reports visible
+FrameXML edit focus; SC2's currently empty glue reports false. This changes the native menu function table and requires
+rebuilding client/menu modules together; network and save formats are unchanged.
+
+Regression coverage: `client_input.return_to_menu_without_edit_focus_keeps_keyboard_closed` runs the SDL input pump,
+menu entry, focus changes, console restoration, and active/loading exclusions. `menu_fdf.campaign_return_from_game_has_no_text_input_owner`
+covers both ROC and TFT campaign selection. `menu_fdf.text_input_respects_menu_activity_and_transition_lock` and
+`wow_hud_xml.platform_text_input_requires_visible_edit_focus` cover the game-owned focus queries. These headless tests
+verify SDL text-session ownership; physical mobile keyboard appearance still depends on the platform's SDL backend.
 
 ## History and Regression
 

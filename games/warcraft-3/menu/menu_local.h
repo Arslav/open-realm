@@ -182,6 +182,8 @@ void UI_EditDragEvent(menuMouseEvent_t event, float x, int32_t param, uint32_t m
 bool M_MouseEvent(menuMouseEvent_t event, int x, int y, int32_t param, uint32_t mods);
 bool UI_FrameContainsPoint(frameDef_t const *frame, float fdf_x, float fdf_y);
 void M_TextInput(cstring_t text);
+bool M_TextInputActive(void);
+bool UI_EditActive(void);
 void UI_EditTextInput(cstring_t text);
 bool UI_EditHasFocus(frameDef_t const *frame);
 cstring_t UI_EditValue(frameDef_t const *frame);

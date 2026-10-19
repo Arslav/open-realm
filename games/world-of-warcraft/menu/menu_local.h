@@ -139,6 +139,7 @@ font_t const *UIWow_LoadFont(uint32_t size);
 /* XML runtime input hooks. */
 bool UIWow_XMLMouseEvent(menuMouseEvent_t event, int x, int y, int32_t param);
 bool UIWow_XMLTextInput(cstring_t text);
+bool UIWow_XMLTextInputActive(void);
 bool UIWow_XMLKeyEvent(int key, bool down, uint32_t time);
 
 #endif /* wow_menu_local_h */

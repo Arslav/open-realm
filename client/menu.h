@@ -119,6 +119,7 @@ typedef struct {
     /* Input event handling */
     void (*KeyEvent)(int key, uint32_t mods, bool down, uint32_t time);
     void (*TextInput)(cstring_t text);
+    bool (*TextInputActive)(void); /* Focused, currently interactive glue edit control owns text input. */
     bool (*MouseEvent)(menuMouseEvent_t event, int x, int y, int32_t param, uint32_t mods);
     
     void (*UpdateLobbySetup)(lobbyState_t const *state);

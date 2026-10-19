@@ -2902,23 +2902,55 @@ TEST(menu_fdf, text_input_respects_menu_activity_and_transition_lock) {
     T_NOT_NULL(edit);
     UI_SetEditValue(edit, "1234");
     UI_EditboxFocusOnHit(edit);
+    menuExport_t api = M_GetAPI(mi);
+    T_ASSERT(api.TextInputActive());
     M_SetActive(false);
+    T_ASSERT(!api.TextInputActive());
     M_TextInput("5");
     T_STREQ(UI_EditValue(edit), "1234");
     M_SetActive(true);
+    T_ASSERT(api.TextInputActive());
     M_TextInput("5");
     T_STREQ(UI_EditValue(edit), "12345");
     Cmd_ExecuteString("menu_main");
     T_ASSERT(M_IsTransitioning());
+    T_ASSERT(!api.TextInputActive());
     M_TextInput("6");
-    menuExport_t api = M_GetAPI(mi);
     api.KeyEvent(8, 0, true, M_Time());
     T_STREQ(UI_EditValue(edit), "12345");
     test_glue_tick(667);
     test_glue_tick(1000);
     T_ASSERT(!M_IsTransitioning());
+    T_ASSERT(!api.TextInputActive());
     Cmd_ExecuteString("menu_ingame");
+    T_ASSERT(!api.TextInputActive());
     UI_ResetGlueSceneModels();
+    mi = saved;
+}
+
+TEST(menu_fdf, campaign_return_from_game_has_no_text_input_owner) {
+    menuImport_t saved = mi;
+    bool old_tft = test_fs_expansion;
+    FOR_LOOP(tft, 2) {
+        test_fs_expansion = tft != 0;
+        test_glue_setup();
+        menuExport_t api = M_GetAPI(mi);
+        Cmd_ExecuteString("menu_single_player_campaign");
+        test_glue_tick(1000);
+        T_ASSERT(UI_GetCurrentScreen() == &singlePlayerMenuScreen);
+        T_ASSERT(!UI_FindFrame("CampaignSelectFrame")->hidden);
+        T_ASSERT(!api.TextInputActive());
+        Cmd_ExecuteString("menu_ingame");
+        T_ASSERT(!api.TextInputActive());
+        Cmd_ExecuteString("menu_single_player_campaign");
+        test_glue_tick(1000);
+        T_ASSERT(UI_GetCurrentScreen() == &singlePlayerMenuScreen);
+        T_ASSERT(!UI_FindFrame("CampaignSelectFrame")->hidden);
+        T_ASSERT(!api.TextInputActive());
+        Cmd_ExecuteString("menu_ingame");
+        UI_ResetGlueSceneModels();
+    }
+    test_fs_expansion = old_tft;
     mi = saved;
 }
 

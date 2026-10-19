@@ -153,6 +153,31 @@ TEST(wow_hud_xml, parse_basic_frame) {
     UIWow_XMLClearFrames();
 }
 
+TEST(wow_hud_xml, platform_text_input_requires_visible_edit_focus) {
+    static char const xml[] =
+        "<Ui><Frame name=\"Login\">"
+        "<Size x=\"400\" y=\"100\"/><Anchors><Anchor point=\"CENTER\"/></Anchors>"
+        "<Frames><EditBox name=\"LoginName\">"
+        "<Size x=\"200\" y=\"40\"/><Anchors><Anchor point=\"CENTER\"/></Anchors>"
+        "</EditBox></Frames></Frame></Ui>";
+    reset_state();
+    menuExport_t api = init_ui();
+    UIWow_XMLClearFrames();
+    T_ASSERT(!api.TextInputActive());
+    T_ASSERT(UIWow_XMLLoadBuffer(xml, sizeof(xml) - 1, "test"));
+    T_ASSERT(!api.TextInputActive());
+    T_ASSERT(api.MouseEvent(MENU_MOUSE_DOWN, 512, 384, 1, 0));
+    T_ASSERT(api.TextInputActive());
+    api.TextInput("Arthas");
+    T_STREQ(UIWow_XmlElemText(UIWow_XmlFindByNamePub("LoginName")), "Arthas");
+    UIWow_XMLSetFrameVisible("Login", false);
+    T_ASSERT(!api.TextInputActive());
+    UIWow_XMLSetFrameVisible("Login", true);
+    T_ASSERT(api.TextInputActive());
+    UIWow_XMLClearFrames();
+    T_ASSERT(!api.TextInputActive());
+}
+
 TEST(wow_hud_xml, parse_fontstring_type_and_text) {
     static const char xml[] =
         "<Ui><FontString name=\"FS\" text=\"Hello World\"/></Ui>";
