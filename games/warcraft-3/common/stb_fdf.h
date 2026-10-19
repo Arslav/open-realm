@@ -593,9 +593,10 @@ static inline bool eat_token(wordExtractor_t *p, cstring_t value) {
     return false;
 }
 
-static inline cstring_t parse_segment(wordExtractor_t *p) {
-    static char seg[PARSER_MAX_SEGMENT];
-    memset(seg, 0, PARSER_MAX_SEGMENT);
+/* Caller-owned storage keeps nested ability-list decodes from clobbering an outer parser token. */
+static inline cstring_t parse_segment_into(wordExtractor_t *p, string_t seg, size_t size) {
+    if (!size) return NULL;
+    /* Every returned segment writes its own terminator. */
     if (*p->buffer == '\0') return NULL;
     parser_skip_ws(p);
     if (*p->buffer == '\0') return NULL;
@@ -608,12 +609,12 @@ static inline cstring_t parse_segment(wordExtractor_t *p) {
         ++start;
         closing_quote = strchr(start, '"');
         if (!closing_quote) {
-            strlcpy(seg, start, PARSER_MAX_SEGMENT);
+            strlcpy(seg, start, size);
             p->buffer = start + strlen(start);
             return seg;
         }
         seglen = (size_t)(closing_quote - start);
-        if (seglen >= PARSER_MAX_SEGMENT) seglen = PARSER_MAX_SEGMENT - 1;
+        if (seglen >= size) seglen = size - 1;
         memcpy(seg, start, seglen);
         seg[seglen] = '\0';
         comma = strchr(closing_quote + 1, ',');
@@ -622,16 +623,22 @@ static inline cstring_t parse_segment(wordExtractor_t *p) {
     } else {
         p->buffer = strchr(p->buffer, ',');
         if (p->buffer) {
-            memcpy(seg, start, p->buffer - start);
-            seg[p->buffer - start] = '\0';
+            size_t len = MIN((size_t)(p->buffer - start), size - 1);
+            memcpy(seg, start, len);
+            seg[len] = '\0';
         } else {
-            strcpy(seg, start);
+            strlcpy(seg, start, size);
             p->buffer = start + strlen(start);
             return seg;
         }
     }
     ++p->buffer;
     return seg;
+}
+
+static inline cstring_t parse_segment(wordExtractor_t *p) {
+    static char seg[PARSER_MAX_SEGMENT];
+    return parse_segment_into(p, seg, sizeof(seg));
 }
 
 static inline cstring_t parse_segment2(wordExtractor_t *p) {

@@ -92,7 +92,7 @@ cstring_t peek_token(wordExtractor_t *p) {
 
 cstring_t parse_segment(wordExtractor_t *p) {
     static char segment[MAX_SEGMENT_SIZE];
-    memset(segment, 0, MAX_SEGMENT_SIZE);
+    /* Every returned segment writes its own terminator. */
     if (*p->buffer == '\0')
         return NULL;
     while (isspace(*p->buffer))

@@ -354,7 +354,7 @@ TEST_JOBS ?= 16
  test: $(SHARED_LIB) $(JASS_LIB) $(SHEET_LIB) | $(BIN_DIR) $(TEST_JUNIT_DIR)
 	@rm -f $(TEST_JUNIT_DIR)/*.xml
 	@# Run independent suites concurrently while preserving recursive-make failure propagation.
-	@$(MAKE) -j$(TEST_JOBS) test-core test-eos-release test-linux-media-release test-menu-boundary test-assets test-gl-shader test-commands test-jass-build test-galaxy test-server-net test-sound test-music-mp3 \
+	@$(MAKE) -j$(TEST_JOBS) test-core test-list-lexer test-eos-release test-linux-media-release test-menu-boundary test-assets test-gl-shader test-commands test-jass-build test-galaxy test-server-net test-sound test-music-mp3 \
 		test-renderer-model test-mdx-geoset test-mdx-ui test-mdx-texture test-renderer-view test-renderer-frame test-renderer-shadows test-ui-canvas test-sc2 test-wow-appearance \
 		test-wow-engine test-wow-game test-wow-entities test-wow-abilities test-wow-menu \
 		test-wow-wmo test-menu test-wc3-engine test-client-camera test-wc3-hero-saveload-audit test-render-harness test-mpq-compression
@@ -365,6 +365,7 @@ test-stress: $(BIN_DIR)/test_server_net$(EXE_EXT) | $(TEST_JUNIT_DIR)
 	@TEST_JUNIT="$(TEST_JUNIT_DIR)/test-stress.xml" TEST_JUNIT_SUITE="test-stress" $(BIN_DIR)/test_server_net 'stress_net.*'
 
 $(eval $(call test_schema,test-core,$(SHARED_LIB) $(SHEET_LIB),$(TEST_CFLAGS) -DBZ_TESTS,$(BIN_DIR)/test_openwarcraft3$(EXE_EXT),tests/test_runner.c tests/test_compat.c tests/test_net.c tests/test_online_packet.c tests/test_tool_common.c $(WC3_TEST_DIR)/test_client_stubs.c $(WC3_TEST_DIR)/test_control_groups.c $(WC3_TEST_DIR)/test_client_canvas.c $(WC3_TEST_DIR)/test_keys.c common/net.c common/msg.c common/online_packet.c client/keys.c client/cl_control_groups.c client/cl_parse.c client/cl_configstrings.c client/cl_scrn.c client/cl_minimap.c client/cl_layout.c client/cl_window.c client/cl_canvas.c,-lsheet -lshared -lm -lz $(NET_LIBS),))
+$(eval $(call test_schema,test-list-lexer,$(SHARED_LIB) $(WC3_DIR)/jass/jlex.c $(WC3_DIR)/jass/jlex.h $(WC3_DIR)/common/stb_fdf.h,$(TEST_CFLAGS) -Wno-unused-function -ffunction-sections -fdata-sections,$(BIN_DIR)/test_list_lexer$(EXE_EXT),tests/test_runner.c tests/test_list_lexer.c,$(TEST_GC_SECTIONS) -lshared -lm,))
 $(eval $(call test_schema,test-mpq-compression,$(SHARED_LIB),$(TEST_CFLAGS) -DMPQ_TEST_API -DBZ_TESTS,$(BIN_DIR)/test_mpq_compression$(EXE_EXT),tests/test_runner.c tests/test_mpq_compression.c common/mpq.c,-lshared -lm -lz,))
 
 $(eval $(call test_schema,test-commands,test-assets $(SHARED_LIB) $(SHEET_LIB),$(TEST_CFLAGS),$(BIN_DIR)/test_commands$(EXE_EXT),tests/test_runner.c $(WC3_TEST_DIR)/test_commands.c client/cl_screenshot.c common/common.c common/cmd.c common/cvar.c common/msg.c common/net.c common/mpq.c,-lsheet -lshared -lm -lz $(NET_LIBS),))
