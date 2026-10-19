@@ -8,6 +8,115 @@ old binary packages may have been cleaned while source/patch evidence is indexed
 in the optimization archive (`$OPENREALM_EXPERIMENTS_DIR/warcraft-3/optimization-archive/README.md`, external archive).
 
 
+## Entity diagnostic lookup trial (October 19, 2026)
+
+Experimental branch `perf/entity-diagnostic-gate`, exact base `eee7dc02`.
+`V_AddClientEntity` previously called `Cvar_Integer("cl_debug_entities", 0)`
+for every entity before testing the paused-emission flag. The cvar is absent
+in this user's config; the read-only getter performs a full linear miss through
+the aliases and cvar list. Blame identifies `b3eccac2c`, not the thread split.
+The candidate tests the flag, entity-number bound and one-second print throttle
+first, querying configuration only when a diagnostic can print. Runtime toggles,
+time rewind, particle flags, scene composition and network/save formats stay
+unchanged. Snapshot parsing retains its once-per-snapshot diagnostic query.
+
+Control APK `c0babcc0291dd21f5e07879be0bb169861c7a12ea53b3479c9e87ba718b4fa7b`.
+Candidate `58fc26bb6c0e5c9bd27fc79538eea46c4dd5104524d17c4c5832780e7671e2c4`.
+Only `libwarcraft3.so` changes; all other libraries, assets/Java, SDK35 ANGLE
+and signing identity match. No ordinary/distribution build was prepared.
+
+### Mixed army: less lookup work does not establish an FPS win
+
+Honor AGM3-AL09HN / Mali-G52 MC2, Vulkan, 1920×1200, 100% native render,
+particles 2 and accepted pose/palette/server settings. `CombatBench200.w3x`
+SHA-256 `f0e3b4523f36844843582f95a1ef64f8203048a7d64b0b4412330ce711bf81c5`.
+Each A/B/B/A run uses a fresh process/map, camera (4600, -4600, 3000),
+10-second idle and 3-second movement/fight warmups, then 25-second counter
+windows. Every stage resets the 200-unit roster; casualties and spells evolve
+in battle. No builds, sampling, GPU queries or traces overlap FPS windows.
+
+| Run | Idle FPS | Moving FPS | Fighting FPS |
+|---|---:|---:|---:|
+| A1 | 38.433 | 35.526 | 25.643 |
+| B1 | 39.474 | 35.567 | 22.184 |
+| B2 | 37.768 | 35.683 | 22.000 |
+| A2 | 37.043 | 35.450 | 23.882 |
+| Weighted A | 37.738 | 35.488 | 24.782 |
+| Weighted B | 38.622 | 35.625 | 22.093 |
+| Change | +2.34% | +0.39% | -10.85% |
+
+The two candidate fighting windows regress. This record does not establish a
+successful combat optimization, a driver cause or a deterministic gameplay
+regression. Static/moving gains are small relative to run variation. Keep all
+windows; do not replace them with a favorable screenshot or sampled FPS.
+The earlier Durotar profile's 13.66% main-CPU callsite share is scene-specific;
+it cannot be applied to this map as a predicted frame-time saving.
+
+Separate 20-second 500-Hz `task-clock:u` profiles resolve the exact APK build IDs:
+
+| Main userspace CPU spent in `strcmp` at this diagnostic callsite | Control | Candidate |
+|---|---:|---:|
+| Idle | 4.488% | No samples |
+| Fighting | 3.253% | No samples |
+
+The four profiles contain 12,874 / 12,288 / 12,889 / 11,794 samples, zero loss,
+and no missing required shared-library build IDs. Inclusive stacks and lane
+shares are not wall-frame or GPU fractions. These profiled FPS windows are
+excluded from the A/B/B/A comparison. Sampling spans about 20 seconds, whereas
+the accompanying counter window includes recorder postprocessing; do not divide
+sampled CPU seconds by that counter window's frame count to claim CPU ms/frame.
+No sampled callsite cost is not a claim of zero runtime cost in every scene.
+
+### Durotar comparison with the same APK pair
+
+The owner requested a second scene after the mixed-army result. A **new** backup
+was made after the intervening manual mission session; the earlier user-file
+backup must not be restored again. Same APK hashes, Vulkan/100%, full effects,
+fresh OrcX01 process/map per A/B/B/A run, no rebuild. Each counter window is
+25 seconds: authored opening about 8 seconds after observed `G_ClientBegin`,
+then gameplay ten seconds after normal `cinematic stop`. Camera/timer/RNG/DVFS
+variation remains; these are not matched deterministic camera replays.
+
+| Run | Opening FPS | Starting gameplay FPS |
+|---|---:|---:|
+| A1 | 19.617 | 19.814 |
+| B1 | 21.633 | 22.894 |
+| B2 | 19.543 | 22.483 |
+| A2 | 18.397 | 19.925 |
+| Weighted A | 19.017 | 19.869 |
+| Weighted B | 20.583 | 22.689 |
+| Change | +8.24% | +14.19% |
+
+Keep these results separate from the battle windows and from the preceding
+thread-split experiment: its control APK was different. This trial establishes
+scene-dependent package results, not a universal improvement or a 40 FPS result.
+The eligibility gate remains on `perf/entity-diagnostic-gate`; the accepted
+`perf/server-render-threads` branch remains at `eee7dc02`. The accepted APK was initially returned using the **new Durotar backup**.
+The owner then explicitly requested installing the last tested APK with both
+optimizations. Final installation is candidate `58fc26bb…`, verified against
+a new checkpoint of the current user files; no older user backup was restored.
+Settings, progress and all five save hashes are unchanged across that install.
+No driver changes were made.
+
+### Verification and retention
+
+The real conversion path is exercised with 200 normal units/buildings, both
+runtime diagnostic values, paused emission, a one-second throttle, time rewind
+and invalid entity numbers. Four assertions fail before the gate change; all
+2,091 assertions in the optimized/debug nine-test frame harness pass afterward.
+The full suite passes 7,246 executions / 36 JUnit reports, plus five ANGLE
+Python cases. Android native compilation and WC3/WoW/SC2 client translation
+units with/without `BZ_TESTS` pass. No sanitizer pass is claimed.
+
+The first benchmark setup attempt exceeded `UINAME[80]`'s 79-character bind
+limit, truncating the camera/query command. A startup assertion rejected it
+before any FPS window. Its log and recipe are retained; the accepted recipe
+uses separate short binds. No engine binding-limit change was made.
+
+Complete source/patch, tests, counter windows, CPU profiles, matching engine
+symbols and session restoration records belong to the
+diagnostic gate archive (`$OPENREALM_EXPERIMENTS_DIR/warcraft-3/optimization-archive/debug-entity-check-20261019/README.md`, external archive).
+
 ## Native server/render overlap (October 18–19, 2026)
 
 The `perf/server-render-threads` branch, based on `9c37777c`, overlaps the
@@ -96,7 +205,9 @@ A concrete next main-thread target is the per-entity `cl_debug_entities` lookup:
 This is stronger evidence than attributing every `strcmp` sample to renderer
 settings in general. Other prospective work is status/spatial/selection scans
 on the worker and immutable message queues to reduce host waits. These are
-profile findings, not additional implemented optimizations in this trial.
+profile findings, not additional implemented optimizations in this trial. The
+[October 19 diagnostic trial](#entity-diagnostic-lookup-trial-october-19-2026)
+records the subsequent lookup experiment, including negative combat windows.
 
 
 ## Android credits profiling (October 2026)

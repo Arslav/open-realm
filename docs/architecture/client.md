@@ -28,6 +28,14 @@ before a server tick is posted; `SCR_UpdateScreen` then overlaps the tick.
 synchronous wrapper for tools and acceptance callers. See
 [server and renderer threads](server-render-threads.md) for ownership and latency.
 
+`V_AddClientEntity` checks the paused-emission flag, entity-number bound and
+one-second diagnostic throttle before looking up `cl_debug_entities`. Ordinary
+entities never query that cvar during conversion. The lookup remains live when
+a diagnostic can print, so runtime toggles and time rewind keep their behavior;
+no cached setting or rendering policy is introduced. Snapshot parsing retains
+its existing once-per-snapshot diagnostic query. `test_client_view.c` exercises
+the actual conversion for 200 entities, the cvar boundary and diagnostic output.
+
 `CL_Frame(DWORD msec)` is called once per rendered frame by the platform layer (`common/main.c`). It performs the following steps in order:
 
 ```c

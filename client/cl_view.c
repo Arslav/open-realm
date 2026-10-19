@@ -343,11 +343,11 @@ static void V_AddClientEntity(centity_t const *ent) {
     if (ent->current.flags & EF_SELECTION_CIRCLE_ON_WATER) re.flags |= RF_SELECTION_CIRCLE_ON_WATER;
     if (ent->current.flags & EF_MDX_EMISSION_PAUSED) re.flags |= RF_MDX_EMISSION_PAUSED;
     if (ent->current.flags & EF_MDX_ANIMATION_PAUSED) re.flags |= RF_MDX_ANIMATION_PAUSED;
-    if (Cvar_Integer("cl_debug_entities", 0) &&
-        (ent->current.flags & EF_MDX_EMISSION_PAUSED) &&
+    if ((ent->current.flags & EF_MDX_EMISSION_PAUSED) &&
         ent->current.number < MAX_CLIENT_ENTITIES) {
         int *last = &debug_paused_building_time[ent->current.number];
-        if (!*last || cl.time < *last || cl.time - *last >= 1000) {
+        if ((!*last || cl.time < *last || cl.time - *last >= 1000) &&
+            Cvar_Integer("cl_debug_entities", 0)) {
             *last = cl.time;
             fprintf(stderr, "CL_BUILD paused-render ent=%u model=%u time=%d frame=%u oldframe=%u lerp=%.3f flags=0x%08x\n",
                     (unsigned)ent->current.number, (unsigned)ent->current.model,
