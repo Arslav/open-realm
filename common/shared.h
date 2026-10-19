@@ -118,7 +118,8 @@ for (type *property = name; property - name < ARRAY_COUNT(name); property++)
 #define MAKEFOURCC(ch0, ch1, ch2, ch3) ((int)(char)(ch0) | ((int)(char)(ch1) << 8) | ((int)(char)(ch2) << 16) | ((int)(char)(ch3) << 24))
 #endif
 
-#define FOFS(type, x) (handle_t)&(((struct type *)NULL)->x)
+/* GL byte offsets stay pointer-valued without deriving a member from a null struct. */
+#define FOFS(type, x) (handle_t)offsetof(struct type, x)
 
 #define SAFE_DELETE(x, func) if (x) { func(x); (x) = NULL; }
 

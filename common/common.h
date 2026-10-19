@@ -2,6 +2,7 @@
 #define __common_h__
 
 #include <stddef.h>
+#include <stdlib.h>
 
 #include "shared.h"
 #include "net.h"
@@ -211,6 +212,17 @@ static inline void Sys_UpdateLoadingPresentation(bool active, float progress, bo
     (void)loading_screen_submitted;
 }
 #endif
+
+/* Android runs native code beside Java/HWUI threads in an isolated game process.
+ * C++ static teardown during exit races those live threads; callers own engine cleanup. */
+static inline void Sys_Exit(int status) {
+#ifdef __ANDROID__
+    fflush(NULL);
+    _Exit(status);
+#else
+    exit(status);
+#endif
+}
 
 handle_t FS_AddArchive(cstring_t filename);
 bool FS_AddDataDirectory(cstring_t dirname);
