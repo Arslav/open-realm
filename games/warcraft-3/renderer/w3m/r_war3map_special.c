@@ -73,7 +73,8 @@ static mdxModel_t *R_W3FitSpecialModel(w3SpecialFit_t const *fit) {
         mdxGeoset_t *geo = ri.MemAlloc(sizeof(*geo));
         if (!geo) goto failed;
         *geo = *original;
-        geo->next = NULL; geo->vaos = NULL; ARRAY_COUNT(geo->vaos) = 0;
+        geo->next = NULL; geo->vaos = geo->inst_vaos = NULL;
+        ARRAY_COUNT(geo->vaos) = ARRAY_COUNT(geo->inst_vaos) = 0;
         geo->matrixPalette = NULL; geo->num_matrixPalette = 0;
         geo->vertices = ri.MemAlloc(geo->num_vertices * sizeof(*geo->vertices));
         geo->normals = ri.MemAlloc(geo->num_vertices * sizeof(*geo->normals));
@@ -553,13 +554,15 @@ TEST(wc3_terrain, orcx01_cave_vertices_follow_raw_height_and_keep_stacked_walls)
     vec2_t uvs[8] = {{.998047f,.001953f}, {0,0}, {1,1}, {.2f,.3f},
         {.615494f,.979932f}, {0,1}, {1,0}, {.7f,.8f}};
     short triangles[] = {0,1,2};
+    uint32_t source_arrays[] = {91, 92};
     mdxGeoset_t geoset = {.vertices=positions, .num_vertices=4, .normals=normals,
         .texcoord=uvs, .num_texcoord=4, .num_texcoordChannels=2,
-        .triangles=triangles, .num_triangles=3};
+        .triangles=triangles, .num_triangles=3, .inst_vaos=source_arrays, .inst_vaos_count=2};
     mdxTexture_t texture = {.replaceableID=11};
     mdxRibbonInstance_t ribbon = {0};
     mdxModel_t mdx = {.geosets=&geoset, .textures=&texture, .num_textures=1, .ribbon_states=&ribbon,
         .bounds={.box={.min={-192,-192,0}, .max={192,192,256}}, .radius=300}};
+    mdx.buffers[BZ_MDX_INSTANCE_BUFFER] = 93;
     model_t model = {.modeltype=ID_MDLX, .mdx=&mdx};
     renderEntity_t entity = {.model=&model, .origin={-4416,12480,257.5f},
         .angle=DEG2RAD(270), .scale=1};
@@ -586,6 +589,11 @@ TEST(wc3_terrain, orcx01_cave_vertices_follow_raw_height_and_keep_stacked_walls)
     T_EQ(ARRAY_COUNT(fitted->geosets->vaos), 2);
     T_NULL(geoset.vaos);
     T_NULL(geoset.matrixPalette);
+    T_NULL(fitted->geosets->inst_vaos); T_EQ(fitted->buffers[BZ_MDX_INSTANCE_BUFFER], 0);
+    MDX_PrepareModelInstances(fitted);
+    T_NE(fitted->geosets->inst_vaos, source_arrays); T_EQ(ARRAY_COUNT(fitted->geosets->inst_vaos), 2);
+    T_NE(fitted->buffers[BZ_MDX_INSTANCE_BUFFER], 93);
+    T_EQ(geoset.inst_vaos, source_arrays); T_EQ(source_arrays[0], 91); T_EQ(source_arrays[1], 92);
     vec3_t roof = Matrix4_multiply_vector3(&transform, &fitted->geosets->vertices[0]);
     T_FEQ(roof.x, -4224, .001f); T_FEQ(roof.y, 12672, .001f);
     entity.origin.x += TILE_SIZE;

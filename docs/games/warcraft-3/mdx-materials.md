@@ -36,8 +36,10 @@ priority then filter ordering (with an additional authored-height tie-break).
 
 ## Verification
 
-`make test-mdx-geoset` runs the production material submission path with only GPU
-calls captured. `mdx_geoset.portal_base_blends_before_additive_texture_at_same_priority`
+`make test-mdx-geoset` runs `tests/test_mdx_material_order.c` against the production
+material submission path with only GPU calls captured. The separate
+`tests/test_mdx_geoset.c` exercises instancing/packet integration in the normal and
+shadow renderer suites. `mdx_geoset.portal_base_blends_before_additive_texture_at_same_priority`
 failed before the fix and checks the portal filter sequence, priority precedence,
 stable ties, mixed materials and solid/alpha ownership. The fixture is synthetic and
 does not require installed archives. Run `make test` for the complete suite.

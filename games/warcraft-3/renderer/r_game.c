@@ -12,6 +12,12 @@
 #include <limits.h>
 #include <math.h>
 
+#ifdef __ANDROID__
+#define BZ_MDX_POSE_FLUSH_DEFAULT "1"
+#else
+#define BZ_MDX_POSE_FLUSH_DEFAULT "0"
+#endif
+
 void _W3M_RegisterMap(cstring_t mapFileName);
 void _W3M_DrawWorld(void);
 void _W3M_DrawTerrainShadows(void);
@@ -541,8 +547,12 @@ static void R_W3RenderAttachmentModels(renderEntity_t const *entity, mat4_t cons
     uint32_t count;
 
     if (!entity || !entity->model || !entity->model->mdx || !transform) return;
-    count = MDLX_CollectAttachmentPositions(entity->model->mdx, transform, entity->frame,
-                                             entity->oldframe, NULL, attachments,
+    /* Empty paths are effect sockets; rebinding their whole skeleton cannot produce an embedded child. */
+    mdxAttachment_t const *attached = entity->model->mdx->attachments;
+    while (attached && !attached->path[0]) attached = attached->next;
+    if (!attached) return;
+    count = MDLX_CollectAttachmentModels(entity->model->mdx, transform, entity->frame,
+                                             entity->oldframe, attachments,
                                              sizeof(attachments) / sizeof(*attachments));
     FOR_LOOP(i, count) {
         renderEntity_t child = *entity;
@@ -906,6 +916,7 @@ void R_Init(void) {
 }
 
 void R_Shutdown(void) {
+    MDLX_ShutdownModelBatches();
     _W3M_ClearMap();
     if (preview.mmp) ri.FS_FreeFile(preview.mmp);
     memset(&preview, 0, sizeof(preview));
@@ -937,6 +948,7 @@ void R_Shutdown(void) {
     memset(event_state, 0, sizeof(event_state));
     R_WeatherShutdown();
     R_LightningShutdown();
+    MDLX_ShutdownPoseWorkers();
     MDLX_Shutdown();
 }
 
@@ -1159,10 +1171,25 @@ static texture_t const *R_MinimapOrdinaryContactTexture(renderEntity_t const *en
     return tr.texture[TEX_WHITE];
 }
 
+#define WC3_MINIMAP_BATCH_MARKERS 128 // contacts; bounds stack scratch while combining dense same-texture armies
+typedef struct {
+    texture_t const *texture;
+    uint32_t count;
+    vertex_t vertices[WC3_MINIMAP_BATCH_MARKERS * 6];
+} minimapBatch_t;
+
+/* Contact order and per-vertex color survive each contiguous texture/capacity packet. */
+static void R_FlushMinimapMarkers(minimapBatch_t *batch) {
+    if (!batch->count) return;
+    R_DrawImageBatchEx(&(drawImageBatchParams_t){ .texture = batch->texture, .shader = SHADER_UI,
+        .alphamode = BLEND_MODE_BLEND, .vertices = batch->vertices, .vertexCount = batch->count });
+    batch->count = 0;
+}
+
 /* Draw one automatic WC3 contact from recipient-authored snapshot metadata.
  * Shared/client code carries the game variant opaquely; only this WC3 renderer
  * assigns minimap semantics to it. */
-static void R_DrawMinimapEntityMarker(renderEntity_t const *entity) {
+static void R_DrawMinimapEntityMarker(renderEntity_t const *entity, minimapBatch_t *batch) {
     wc3MinimapContact_t const contact = wc3_minimap_contact_get(entity ? entity->effect_flags : 0);
     texture_t const *texture = NULL;
     color32_t color = COLOR32_WHITE;
@@ -1196,13 +1223,19 @@ static void R_DrawMinimapEntityMarker(renderEntity_t const *entity) {
 
     if (!texture || size.x <= 0.0f || size.y <= 0.0f) return;
     marker = wc3_minimap_marker_rect(&point, contact);
-    R_DrawImage(texture, &marker, &MAKE(rect_t, 0, 0, 1, 1), color);
+    if (batch->count && (batch->texture != texture || batch->count == WC3_MINIMAP_BATCH_MARKERS * 6))
+        R_FlushMinimapMarkers(batch);
+    batch->texture = texture;
+    R_AddQuad(batch->vertices + batch->count, &marker, &MAKE(rect_t, 0, 0, 1, 1), color, 0);
+    batch->count += 6;
 }
 
 static void R_DrawMinimapEntityMarkers(void) {
     if (!tr.viewDef.entities) return;
+    minimapBatch_t batch = {0};
     FOR_LOOP(i, tr.viewDef.num_entities)
-        R_DrawMinimapEntityMarker(&tr.viewDef.entities[i]);
+        R_DrawMinimapEntityMarker(&tr.viewDef.entities[i], &batch);
+    R_FlushMinimapMarkers(&batch);
 }
 
 void R_DrawMinimap(rect_t const *screen, cstring_t map) {
@@ -1244,6 +1277,9 @@ void R_DrawMinimap(rect_t const *screen, cstring_t map) {
 }
 
 void R_RegisterMap(cstring_t mapFileName) {
+    MDLX_EndModelBatch();
+    MDLX_ShutdownPoseWorkers();
+    MDLX_ClearPoseCache();
     cursor_active_model = NULL; cursor_anim = NULL;
     R_SetMapAssetScope(mapFileName);
     R_AdvanceTextureGeneration();
@@ -1274,8 +1310,62 @@ void R_SetupEnvironmentLighting(void) {
         tr.viewDef.entityLight = R_EnvironLightFromModel(&light);
 }
 
+/* Report the previous view after its solid/alpha/socket consumers have used the cache. */
+static uint32_t pose_flushes;
+static void R_ReportPreparedPoses(void) {
+    static struct { Uint64 start; uint32_t frames; mdxPoseStats_t total; } sample;
+    if (!R_CvarEnabled("r_mdx_pose_stats", "0")) { memset(&sample, 0, sizeof(sample)); pose_flushes = 0; return; }
+    mdxPoseStats_t stats = MDLX_PosePreparationStats();
+    sample.frames++; sample.total.requests += stats.requests; sample.total.jobs += stats.jobs;
+    sample.total.nodes += stats.nodes; sample.total.worker_jobs += stats.worker_jobs; sample.total.hits += stats.hits;
+    sample.total.packets += stats.packets; sample.total.worker_packets += stats.worker_packets;
+    sample.total.packet_hits += stats.packet_hits; sample.total.packet_misses += stats.packet_misses;
+    sample.total.prepare_ms += stats.prepare_ms; sample.total.wait_ms += stats.wait_ms;
+    Uint64 now = SDL_GetPerformanceCounter(), frequency = SDL_GetPerformanceFrequency();
+    if (!sample.start) sample.start = now;
+    if (now - sample.start < frequency) return;
+    double frames = sample.frames;
+    fprintf(stderr, "[MDX_POSE] views=%u requests=%.1f jobs=%.1f nodes=%.1f worker_jobs=%.1f hits=%.1f flushes=%u prepare_ms=%.3f wait_ms=%.3f packets=%.1f worker_packets=%.1f packet_hits=%.1f packet_misses=%.1f\n",
+        sample.frames, sample.total.requests / frames, sample.total.jobs / frames, sample.total.nodes / frames,
+        sample.total.worker_jobs / frames, sample.total.hits / frames, pose_flushes, sample.total.prepare_ms / frames, sample.total.wait_ms / frames,
+        sample.total.packets / frames, sample.total.worker_packets / frames, sample.total.packet_hits / frames, sample.total.packet_misses / frames);
+    pose_flushes = 0;
+    memset(&sample, 0, sizeof(sample)); sample.start = now;
+}
+
+static void R_PrepareModelPoses(void) {
+    if (tr.render_phase != RENDER_PHASE_SOLID || (tr.viewDef.rdflags & RDF_NOWORLDMODEL)) return;
+    R_ReportPreparedPoses();
+#ifdef __ANDROID__
+    static char default_workers[12];
+    if (!default_workers[0]) snprintf(default_workers, sizeof(default_workers), "%d", MIN(MDLX_POSE_WORKERS, MAX(0, SDL_GetCPUCount() - 1)));
+#else
+    cstring_t const default_workers = "0";
+#endif
+    uint32_t workers = MAX(0, atoi(ri.CvarString("r_mdx_pose_workers", default_workers)));
+    if (!MDLX_BeginPosePreparation(workers)) return;
+    if (tr.viewDef.num_entities >= 16 && R_CvarEnabled("r_entities", "1")) {
+        FOR_LOOP(i, tr.viewDef.num_entities) {
+            renderEntity_t const *entity = tr.viewDef.entities + i;
+            if ((entity->flags & RF_HIDDEN) || !entity->model || entity->model->modeltype != ID_MDLX || !entity->model->mdx) continue;
+            mdxModel_t const *model = entity->model->mdx;
+            /* Fitted terrain variants may release cached models during collection; keep them on demand. */
+            bool fitted = false;
+            FOR_LOOP(t, model->num_textures) fitted |= model->textures[t].replaceableID == 11;
+            if (fitted) continue;
+            mat4_t matrix; R_GetEntityMatrix(entity, &matrix);
+            MDLX_QueueEntityPose(entity, model, &matrix);
+        }
+    }
+    /* Start pending terrain work before occupying the CPU with a sufficiently large pose batch. */
+    if (MDLX_HasPoseWork() && R_CvarEnabled("r_mdx_pose_flush", BZ_MDX_POSE_FLUSH_DEFAULT)) { R_Call(glFlush); pose_flushes++; }
+    MDLX_EndPosePreparation();
+}
+
 void R_DrawWorld(void) {
+    MDLX_BeginModelBatch();
     _W3M_DrawWorld();
+    R_PrepareModelPoses();
     R_W3DrawEventSplats();
     R_W3DrawEventSpawns(false, NULL, 0);
 }
@@ -1289,6 +1379,7 @@ void R_DrawTerrainShadows(void) {
 }
 
 void R_DrawAlphaSurfaces(void) {
+    MDLX_EndModelBatch();
     if (!(tr.viewDef.rdflags & RDF_NOWORLDMODEL)) {
         _W3M_DrawAlphaSurfaces();
         R_LightningDraw();
@@ -1298,6 +1389,7 @@ void R_DrawAlphaSurfaces(void) {
     /* MDX blended geosets must composite over water. Opaque geosets were
      * already rendered during the ordinary entity pass; RENDER_PHASE_ALPHA
      * selects only transparent model layers and the alpha of tinted units. */
+    if (!(tr.viewDef.rdflags & RDF_NOWORLDMODEL)) MDLX_BeginModelBatch();
     FOR_LOOP(i, tr.viewDef.num_entities) {
         renderEntity_t const *entity = tr.viewDef.entities + i;
         if ((entity->flags & RF_HIDDEN) || !entity->model || entity->model->modeltype != ID_MDLX)
@@ -1310,6 +1402,7 @@ void R_DrawAlphaSurfaces(void) {
     } else if (!(tr.viewDef.rdflags & RDF_NOWORLDMODEL)) {
         R_W3DrawEventSpawns(false, NULL, 0);
     }
+    MDLX_EndModelBatch();
 }
 
 bool R_TraceLocation(viewDef_t const *viewdef, float x, float y, vec3_t *point) {
@@ -1354,26 +1447,48 @@ static bool R_W3WalkableSurfaceHit(renderEntity_t const *surface, float x, float
  * collision/geoset geometry supplies the exact visual support Z. Preserve the
  * explicit server-authored altitude offset (WC3 FlyHeight) and replace only the
  * coarse destructable-origin support height with the highest authored MDX hit. */
+#ifdef BZ_TESTS
+uint32_t R_TestConformClassifications;
+#endif
 void R_ConformGroundSurfaces(viewDef_t *viewdef) {
     if (!viewdef || (viewdef->rdflags & RDF_NOWORLDMODEL)) return;
-
+    renderEntity_t const *stack[64], **surfaces = stack; /* surface pointers; usual views avoid a heap allocation */
+    uint32_t count = 0;
     FOR_LOOP(i, viewdef->num_entities) {
+#ifdef BZ_TESTS
+        R_TestConformClassifications++;
+#endif
+        renderEntity_t *ent = &viewdef->entities[i];
+        ent->flags &= ~RF_GROUND_SURFACE_SUPPORT;
+        if (!(ent->flags & RF_GROUND_SURFACE) || (ent->flags & RF_HIDDEN) || !ent->model) continue;
+        if (count == sizeof(stack) / sizeof(*stack)) {
+            surfaces = malloc((size_t)viewdef->num_entities * sizeof(*surfaces));
+            if (!surfaces) { fprintf(stderr, "WC3: unable to allocate walkable surface candidates\n"); Sys_Exit(EXIT_FAILURE); }
+            memcpy(surfaces, stack, sizeof(stack));
+        }
+        surfaces[count++] = ent;
+    }
+    if (!count) return;
+    FOR_LOOP(i, viewdef->num_entities) {
+#ifdef BZ_TESTS
+        R_TestConformClassifications++;
+#endif
         renderEntity_t *ent = &viewdef->entities[i];
         float authored_support = 0.0f;
         bool found_surface = false;
-
-        ent->flags &= ~RF_GROUND_SURFACE_SUPPORT;
 
         if (!(ent->flags & RF_GROUND_CONFORM) || (ent->flags & RF_HIDDEN) ||
             (ent->flags & RF_GROUND_SURFACE) || !ent->model) {
             continue;
         }
 
-        FOR_LOOP(j, viewdef->num_entities) {
-            renderEntity_t const *surface = &viewdef->entities[j];
+        FOR_LOOP(j, count) {
+#ifdef BZ_TESTS
+            R_TestConformClassifications++;
+#endif
+            renderEntity_t const *surface = surfaces[j];
             float hit_z;
 
-            if (!(surface->flags & RF_GROUND_SURFACE)) continue;
             if (!R_W3WalkableSurfaceHit(surface, ent->origin.x, ent->origin.y, &hit_z)) continue;
             if (!found_surface || hit_z > authored_support) {
                 authored_support = hit_z;
@@ -1391,6 +1506,7 @@ void R_ConformGroundSurfaces(viewDef_t *viewdef) {
             ent->flags |= RF_GROUND_SURFACE_SUPPORT;
         }
     }
+    if (surfaces != stack) free(surfaces);
 }
 
 vec2_t R_WorldOrigin(void) {
@@ -1455,6 +1571,7 @@ model_t *R_LoadModel(cstring_t modelFilename) {
 }
 
 void R_ReleaseModel(model_t *model) {
+    MDLX_EndModelBatch();
     if (model->modeltype == ID_MDLX) {
         MDLX_Release(model->mdx);
     }
@@ -1919,7 +2036,10 @@ static bool R_W3RenderEventSplat(wc3EventSplat_t *splat) {
 
 static void R_W3DrawEventSplats(void) {
     if (tr.render_phase != RENDER_PHASE_SOLID) return;
+    /* Retained footprints share submissions only across adjacent material runs, preserving alpha order. */
+    R_BeginSplatBatch(R_SPLAT_SHADER(&tr.shader_default));
     FOR_LOOP(i, WC3_EVENT_SPLAT_MAX) R_W3RenderEventSplat(event_splats + i);
+    R_EndSplatBatch();
 }
 
 static void R_W3DrawEventSpawns(bool entity_camera, model_t const *source_model, uintptr_t source_instance_id) {

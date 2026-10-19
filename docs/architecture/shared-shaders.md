@@ -20,8 +20,12 @@ other consumers to choose their allocation policy.
 Every active uniform uploads on the first draw. Later submissions compare exact
 field bytes and active array counts. Shrinking and growing an array both trigger
 an upload. Matrix transposition happens in CPU scratch storage; GLES uploads
-always use `GL_FALSE`. A submission always binds its own program, even after an
-external `glUseProgram`, with no global cached binding across GL contexts.
+always use `GL_FALSE`. Standalone module use always binds its own program, even
+after an external `glUseProgram`. Open Realm's context-owning adapter skips a
+repeated binding within a frame, invalidates at frame/context boundaries and
+on current-program deletion, and preserves program-owned uniform caches. External
+GL users must invalidate before returning control. See the
+binding cache contract (`../renderer-backend.md#implemented-program-binding-cache`; section follows in this series).
 Program-owned storage is released before destroying the owning context.
 
 `R_BuildShaderDeclarations` and `R_BuildShaderMain` retain public inspection

@@ -19,6 +19,17 @@ static size_t terrain_normal_cache_capacity, terrain_normal_cache_count;
 static uint32_t terrain_normal_cache_generation;
 static war3map_t const *terrain_normal_cache_map;
 static bool terrain_normal_cache_active, terrain_normal_cache_warned;
+#define BZ_SPLAT_CACHE_SLOTS 512 // tiles; bounded cache of clipped terrain geometry, independent of tint/atlas
+#define SPLAT_TILE_MAX_VERTICES 30 // vertices; two clipped terrain triangles can each form a seven-corner polygon
+typedef struct {
+    war3map_t const *map;
+    vec2_t mins, size;
+    uint32_t x, y, generation, count;
+    vertex_t vertices[SPLAT_TILE_MAX_VERTICES];
+} splatCache_t;
+static splatCache_t splat_cache[BZ_SPLAT_CACHE_SLOTS];
+static uint32_t splat_generation = 1;
+static bool splat_cache_enabled;
 
 #ifdef WC3_TERRAIN_NORMAL_TESTS
 static uint32_t terrain_normal_cache_hits, terrain_normal_cache_misses;
@@ -78,6 +89,7 @@ void R_ResetTerrainNormalCache(void) {
 
 /* The layers themselves belong to g_groundLayers and are freed with it; only the range tables live here. */
 void R_ResetGroundTextures(void) {
+    R_InvalidateSplatCache();
     FOR_LOOP(i, MAX_MAP_LAYERS) SAFE_DELETE(g_groundBatches[i].first, ri.MemFree);
     memset(g_groundBatches, 0, sizeof(g_groundBatches));
     memset(g_groundTextures, 0, sizeof(g_groundTextures));
@@ -85,7 +97,6 @@ void R_ResetGroundTextures(void) {
 }
 
 #define GROUND_VERTEX_BUFFER_CAPACITY (SEGMENT_SIZE * SEGMENT_SIZE * 6)
-#define SPLAT_TILE_MAX_VERTICES 30 // vertices; two clipped terrain triangles can each form a seven-corner polygon
 
 static vertex_t ground_vertex_buffer[GROUND_VERTEX_BUFFER_CAPACITY];
 static vertex_t *ground_current_vertex = NULL;
@@ -271,7 +282,14 @@ typedef struct {
 } splatTileParams_t;
 
 /* Emit one terrain tile of a splat while remapping both whole and clipped polygons into its atlas UV rectangle. */
+#ifdef BZ_TESTS
+static uint32_t test_splat_tile_builds;
+#endif
+
 static void R_MakeSplatTile(splatTileParams_t const *params) {
+#ifdef BZ_TESTS
+    test_splat_tile_builds++;
+#endif
     vertex_t geom[6];
     struct splClip clips[4];
     uint32_t num_clips = 0;
@@ -329,6 +347,49 @@ static void R_MakeSplatTile(splatTileParams_t const *params) {
     }
 }
 
+/* Terrain rebuilds and map release invalidate geometry; colors/atlas frames never belong in this cache. */
+void R_InvalidateSplatCache(void) {
+    if (++splat_generation == 0) {
+        memset(splat_cache, 0, sizeof(splat_cache));
+        splat_generation = 1;
+    }
+}
+
+/* Cache exact tile clipping in normalized UVs, then emit into the unchanged ordered upload stream. */
+static void R_EmitSplatTile(splatTileParams_t const *params) {
+    if (!splat_cache_enabled) { R_MakeSplatTile(params); return; }
+    uint32_t hash = params->x * 73856093u ^ params->y * 19349663u;
+    vec2_t size = { params->width, params->height };
+    float bounds[] = { params->mins->x, params->mins->y, size.x, size.y };
+    FOR_LOOP(i, 4) {
+        uint32_t bits;
+        memcpy(&bits, bounds + i, sizeof(bits));
+        hash = (hash ^ bits) * 16777619u;
+    }
+    splatCache_t *entry = splat_cache + ((hash ^ (hash >> 16)) & (BZ_SPLAT_CACHE_SLOTS - 1));
+    if (entry->generation != splat_generation || entry->map != params->map || entry->x != params->x ||
+        entry->y != params->y || memcmp(&entry->mins, params->mins, sizeof(vec2_t)) ||
+        memcmp(&entry->size, &size, sizeof(size))) {
+        vec2_t uv0 = {0, 0}, uv1 = {1, 1};
+        splatTileParams_t plain = *params;
+        vertex_t *saved = ground_current_vertex;
+        plain.uv_mins = &uv0; plain.uv_maxs = &uv1; plain.color = COLOR32_WHITE;
+        ground_current_vertex = entry->vertices;
+        R_MakeSplatTile(&plain);
+        entry->count = (uint32_t)(ground_current_vertex - entry->vertices);
+        ground_current_vertex = saved;
+        entry->map = params->map; entry->x = params->x; entry->y = params->y;
+        entry->mins = *params->mins; entry->size = size; entry->generation = splat_generation;
+    }
+    FOR_LOOP(i, entry->count) {
+        vertex_t v = entry->vertices[i];
+        v.texcoord.x = LerpNumber(params->uv_mins->x, params->uv_maxs->x, v.texcoord.x);
+        v.texcoord.y = LerpNumber(params->uv_mins->y, params->uv_maxs->y, v.texcoord.y);
+        v.color = params->color;
+        *ground_current_vertex++ = v;
+    }
+}
+
 static void R_MakeBlightTile(war3map_t const *map, uint32_t x, uint32_t y, vec2_t const *mins, float width, float height, uint32_t blight_tile) {
     vertex_t geom[6];
     R_BuildSplatQuad(map, x, y, mins, width, height, COLOR32_WHITE, geom);
@@ -358,6 +419,7 @@ static void R_FlushSplatBatch(void) {
  * vary, so re-issuing it per splat was pure overhead. */
 static texture_t const *g_splat_texture;
 static splat_shader_t *g_splat_shader;
+static bool g_splat_batch;
 
 static void R_SetSplatDepthBias(bool enabled) {
     if (enabled) {
@@ -420,7 +482,7 @@ static void R_GenerateSplatTiles(rectSplatParams_t const *params) {
                 GROUND_VERTEX_BUFFER_CAPACITY - SPLAT_TILE_MAX_VERTICES) {
                 R_FlushSplatBatch();
             }
-            R_MakeSplatTile(&MAKE(splatTileParams_t, .map = tr.world, .x = (uint32_t)x, .y = (uint32_t)y,
+            R_EmitSplatTile(&MAKE(splatTileParams_t, .map = tr.world, .x = (uint32_t)x, .y = (uint32_t)y,
                 .mins = mins, .uv_mins = params->uv_mins, .uv_maxs = params->uv_maxs,
                 .width = width, .height = height, .color = params->color));
         }
@@ -428,27 +490,27 @@ static void R_GenerateSplatTiles(rectSplatParams_t const *params) {
 }
 
 void R_BeginSplatBatch(splat_shader_t *shader) {
+    splat_cache_enabled = ri.CvarString && atoi(ri.CvarString("r_splat_cache", "0"));
     g_splat_shader = shader;
     g_splat_texture = NULL;
     ground_current_vertex = ground_vertex_buffer;
+    g_splat_batch = true;
 }
 
 void R_AddRectSplat(vec2_t const *mins, vec2_t const *maxs, texture_t const *texture, color32_t color) {
     if (!tr.world || !texture) {
         return;
     }
-    if (texture != g_splat_texture) {
-        R_FlushSplatBatch();
-        R_SetupSplatState(texture, g_splat_shader);
-    }
-    R_GenerateSplatTiles(&MAKE(rectSplatParams_t, .mins = mins, .maxs = maxs,
-        .uv_mins = &(vec2_t){ 0, 0 }, .uv_maxs = &(vec2_t){ 1, 1 }, .color = color));
+    R_RenderRectSplatUV(&MAKE(rectSplatParams_t, .mins = mins, .maxs = maxs,
+        .uv_mins = &(vec2_t){ 0, 0 }, .uv_maxs = &(vec2_t){ 1, 1 },
+        .texture = texture, .shader = g_splat_shader, .color = color));
 }
 
 void R_EndSplatBatch(void) {
     R_FlushSplatBatch();
     R_SetSplatDepthBias(false);
     R_Call(glDepthMask, GL_TRUE);
+    g_splat_batch = false;
 }
 
 typedef struct {
@@ -614,16 +676,20 @@ static bool R_BlightTileCacheUpdate(viewDef_t const *view) {
     return true;
 }
 
-/* Draw an immediate terrain-conforming splat using an explicit texture-atlas rectangle. */
+/* Atlas decals join an explicit batch in order; standalone calls still finish immediately. */
 void R_RenderRectSplatUV(rectSplatParams_t const *params)
 {
     if (!params || !tr.world || !params->mins || !params->maxs || !params->uv_mins ||
         !params->uv_maxs || !params->texture) return;
-    R_SetupSplatState(params->texture, params->shader);
+    bool immediate = !g_splat_batch;
+    if (immediate) R_BeginSplatBatch(params->shader);
+    /* Each footprint previously reset and uploaded this buffer even beside an identical material. */
+    if (params->texture != g_splat_texture || params->shader != g_splat_shader) {
+        R_FlushSplatBatch();
+        R_SetupSplatState(params->texture, params->shader);
+    }
     R_GenerateSplatTiles(params);
-    R_FlushSplatBatch();
-    R_SetSplatDepthBias(false);
-    R_Call(glDepthMask, GL_TRUE);
+    if (immediate) R_EndSplatBatch();
 }
 
 void R_RenderRectSplat(vec2_t const *mins,
@@ -709,6 +775,7 @@ maplayer_t *R_BuildGroundLayerGlobal(war3map_t const *map, uint32_t layer) {
 /* Re-bake one segment of every ground batch after its vertex heights changed. A tile's vertex count depends
  * on its ground type and cliff flags, never on height, so the slice is overwritten where it already lives. */
 void R_UpdateGroundSegment(war3map_t const *map, uint32_t sx, uint32_t sy) {
+    R_InvalidateSplatCache();
     uint32_t const index = sx + sy * ((map->width - 1) / SEGMENT_SIZE);
     FOR_LOOP(layer, MAX_MAP_LAYERS) {
         groundBatch_t const *batch = &g_groundBatches[layer];

@@ -19,7 +19,9 @@ static inline bool MDLX_RenderPhaseIncludesPass(render_phase_t phase,
 #define MDX_TEXTURE_PATH_LENGTH 260
 #define MDX_TEXTURE_RECORD_SIZE (sizeof(uint32_t) + MDX_TEXTURE_PATH_LENGTH + sizeof(uint32_t))
 #define MDX_MAX_NODES 1024
+#define MDLX_POSE_WORKERS 3 // background threads; the context owner also executes jobs
 #define MDX_MATRIX_PALETTE BZ_BONE_PALETTE_MAX
+typedef uint32_t mdxPoseMask_t[MDX_MAX_NODES / 32];
 
 typedef char mdxObjectName_t[80];
 typedef char mdxFileName_t[260];
@@ -53,7 +55,7 @@ enum {
     BZ_MDX_PARTICLE_BOTH
 };
 
-enum { BZ_MDX_VERTEX_BUFFER, BZ_MDX_INDEX_BUFFER, BZ_MDX_UV_BUFFER, BZ_MDX_BUFFER_COUNT };
+enum { BZ_MDX_VERTEX_BUFFER, BZ_MDX_INDEX_BUFFER, BZ_MDX_UV_BUFFER, BZ_MDX_INSTANCE_BUFFER, BZ_MDX_BUFFER_COUNT };
 
 #define MDLXNODE_Helper 0
 #define MDLXNODE_DontInheritTranslation 1
@@ -439,15 +441,17 @@ typedef struct mdxGeoset_s {
     int num_matrixGroupSizes;
     int num_bounds;
     int num_texcoordChannels;    
-    ARRAY(uint32_t, vaos); /* One binding per authored UV channel, sharing positions, skinning and indices. */
+    ARRAY(uint32_t, vaos); /* Ordinary bindings per authored UV channel. */
+    ARRAY(uint32_t, inst_vaos); /* Persistent instance bindings share geometry and the model-owned matrix stream. */
     uint32_t indexofs; // bytes into the model-owned index buffer; indices remain geoset-local
     struct mdxGeoset_s *next;
 } mdxGeoset_t;
 
 /* coordId=-1 is the untextured/native default; invalid positive channels must not silently use UV0. */
-static inline uint32_t MDX_GeosetArray(mdxGeoset_t const *geo, int coord) {
+static inline uint32_t MDX_GeosetArray(mdxGeoset_t const *geo, int coord, bool instanced) {
     uint32_t index = coord == -1 ? 0 : (uint32_t)coord;
-    return index < ARRAY_COUNT(geo->vaos) ? geo->vaos[index] : 0;
+    uint32_t count = instanced ? ARRAY_COUNT(geo->inst_vaos) : ARRAY_COUNT(geo->vaos);
+    return index < count ? (instanced ? geo->inst_vaos[index] : geo->vaos[index]) : 0;
 }
 
 typedef struct mdxSprite_s {
@@ -510,15 +514,57 @@ typedef struct {
 extern mdlx_state_t mdlx;
 extern mat4_t node_matrices[MDX_MAX_NODES];
 
+/* Owner-reserved ranges are filled by one pose job and become readable only after the pool joins. */
+typedef struct {
+    float alpha;
+    uint32_t texture;
+    mat3_t uv;
+} mdxLayerState_t;
+typedef struct {
+    mdxGeoset_t const *geoset;
+    mdxMaterial_t const *material;
+    vec4_t color;
+    uint32_t layerofs, boneofs;
+} mdxGeosetState_t;
+typedef struct {
+    mdxModel_t const *model;
+    uint32_t frame;
+    bool ready;
+    ARRAY(mdxGeosetState_t, geosets);
+    ARRAY(mdxLayerState_t, layers);
+    ARRAY(mat4_t, bones);
+    ARRAY(vec4_t, rows);
+} mdxDrawPacket_t;
+mdxDrawPacket_t *MDLX_ReserveDrawPacket(mdxModel_t const *model, uint32_t frame);
+void MDLX_PrepareDrawPacket(mdxDrawPacket_t *packet, mat4_t const *nodes);
+void MDLX_ClearDrawPackets(void);
+mdxDrawPacket_t const *MDLX_PreparedDraw(renderEntity_t const *entity, mdxModel_t const *model, mat4_t const *matrix);
+
 mdxSequence_t const *R_FindSequenceAtTime(mdxModel_t const *model, uint32_t time);
 bool MDLX_EventKeyCrossed(mdxModel_t const *model, mdxEvent_t const *event, uint32_t key, uint32_t previous_frame, uint32_t current_frame, uint32_t previous_time, uint32_t current_time);
 void MDLX_GetModelKeytrackValue(mdxModel_t const *model, mdxKeyTrack_t const *keytrack, uint32_t time, handle_t output);
 void MDLX_PushEntityAnimationTime(renderEntity_t const *entity, mdxAnimationTimeScope_t *scope);
 void MDLX_PopEntityAnimationTime(mdxAnimationTimeScope_t const *scope);
+uint32_t MDLX_GlobalAnimationTime(void);
 void MDLX_UpdateEntityAnimationPause(renderEntity_t const *entity);
 void MDLX_GetAnimatedColorTrackValue(mdxModel_t const *model, mdxKeyTrack_t const *keytrack, uint32_t time, vec3_t *output);
 void MDLX_GetGeosetAnimationStaticColor(mdxGeosetAnim_t const *geosetAnim, vec3_t *output);
 void MDLX_BindBoneMatrices(mdxModel_t const *model, mat4_t const *model_matrix, uint32_t frame1, uint32_t frame0);
+void MDLX_BindBoneSubset(mdxModel_t const *model, mat4_t const *matrix, uint32_t frame1, uint32_t frame0, mdxPoseMask_t const mask);
+void MDLX_ClearPoseCache(void);
+/* CPU-only preparation owns its cache reservations and completes before returning to drawing. */
+bool MDLX_BeginPosePreparation(uint32_t workers);
+bool MDLX_QueuePose(mdxModel_t const *model, mat4_t const *matrix, uint32_t frame1, uint32_t frame0, mdxPoseMask_t const mask);
+void MDLX_EndPosePreparation(void);
+bool MDLX_HasPoseWork(void);
+void MDLX_ShutdownPoseWorkers(void);
+void MDLX_QueueEntityPose(renderEntity_t const *entity, mdxModel_t const *model, mat4_t const *matrix);
+typedef struct {
+    uint32_t requests, jobs, nodes, worker_jobs, hits;
+    uint32_t packets, worker_packets, packet_hits, packet_misses;
+    double prepare_ms, wait_ms;
+} mdxPoseStats_t;
+mdxPoseStats_t MDLX_PosePreparationStats(void);
 bool MDLX_EvaluateLight(mdxModel_t const *model, mdxLight_t const *light,
                         mat4_t const *model_matrix, uint32_t frame, bool use_visibility,
                         rModelLight_t *output);
@@ -527,6 +573,9 @@ mdxSequence_t const *MDLX_FindSequenceByName(mdxModel_t const *model, cstring_t 
 uint32_t MDLX_CollectAttachmentPositions(mdxModel_t const *model, mat4_t const *model_matrix,
                                       uint32_t frame, uint32_t oldframe, cstring_t prefix,
                                       mdxAttachmentPosition_t *positions, uint32_t max_positions);
+uint32_t MDLX_CollectAttachmentModels(mdxModel_t const *model, mat4_t const *model_matrix,
+                                    uint32_t frame, uint32_t oldframe,
+                                    mdxAttachmentPosition_t *positions, uint32_t max_positions);
 bool MDLX_EventObjectId(mdxEvent_t const *event, cstring_t type, char *out, uint32_t out_size);
 bool MDLX_EventWorldTransform(mdxModel_t const *model, mdxEvent_t const *event,
                               renderEntity_t const *entity, mat4_t const *model_transform,
@@ -536,10 +585,15 @@ mdxModel_t *R_LoadModelMDLX(void *buffer, uint32_t size);
 void MDLX_Release(mdxModel_t *model);
 void MDX_BuildBuffers(mdxModel_t *model);
 void MDX_ReleaseBuffers(mdxModel_t *model);
+void MDX_ReleaseGeosetArrays(mdxGeoset_t *geoset);
+void MDX_PrepareModelInstances(mdxModel_t const *model);
 void MDX_PackModelGeometry(mdxModel_t *model, vertex_t *vertices, uint16_t *indices);
 void MDLX_Init(void);
 void MDLX_Shutdown(void);
 void MDX_RenderModel(renderEntity_t const *entity, mdxModel_t const *model, mat4_t const *model_matrix);
+void MDLX_BeginModelBatch(void);
+void MDLX_EndModelBatch(void);
+void MDLX_ShutdownModelBatches(void);
 bool MDLX_TraceModel(renderEntity_t const *ent, line3_t const *line, vec3_t *intersection);
 bool MDLX_TraceWalkableSurface(renderEntity_t const *ent, line3_t const *line, vec3_t *intersection);
 bool MDLX_ExtractCamera(mdxCameraView_t const *view);

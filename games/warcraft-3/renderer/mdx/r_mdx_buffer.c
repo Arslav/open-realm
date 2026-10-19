@@ -148,8 +148,8 @@ void MDX_PackModelGeometry(mdxModel_t *model, vertex_t *vertices, uint16_t *indi
     }
 }
 
-/* Build compact model-owned GPU storage after all geoset blocks have been parsed. */
-void MDX_BuildBuffers(mdxModel_t *model) {
+/* Both binding families use the same packed geometry/UV layout; only the matrix stream is instanced. */
+static void MDX_BuildModelArrays(mdxModel_t *model, bool instanced) {
     static const struct { GLuint attr; GLint size; GLenum type; GLboolean norm; size_t ofs; } attrs[] = {
         { attrib_position, 3, GL_FLOAT, GL_FALSE, offsetof(vertex_t, position) },
         { attrib_texcoord, 2, GL_FLOAT, GL_FALSE, offsetof(vertex_t, texcoord) },
@@ -158,7 +158,50 @@ void MDX_BuildBuffers(mdxModel_t *model) {
         { attrib_skin1, 4, GL_UNSIGNED_BYTE, GL_FALSE, offsetof(vertex_t, skin) },
         { attrib_boneWeight1, 4, GL_UNSIGNED_BYTE, GL_TRUE, offsetof(vertex_t, boneWeight) },
     };
-    uint32_t verts = 0, elems = 0, base = 0, uvcount = 0, uvbase = 0;
+    uint32_t base = 0, uvbase = 0;
+    FOR_EACH_LIST(mdxGeoset_t, geo, model->geosets) {
+        uint32_t count = MAX(1, geo->num_texcoordChannels);
+        uint32_t *vaos = ri.MemAlloc(count * sizeof(*vaos));
+        R_Call(glGenVertexArrays, count, vaos);
+        if (instanced) { geo->inst_vaos = vaos; ARRAY_COUNT(geo->inst_vaos) = count; }
+        else { geo->vaos = vaos; ARRAY_COUNT(geo->vaos) = count; }
+        FOR_LOOP(channel, count) {
+            R_Call(glBindVertexArray, vaos[channel]);
+            R_Call(glBindBuffer, GL_ELEMENT_ARRAY_BUFFER, model->buffers[BZ_MDX_INDEX_BUFFER]);
+            R_Call(glBindBuffer, GL_ARRAY_BUFFER, model->buffers[BZ_MDX_VERTEX_BUFFER]);
+            FOR_LOOP(i, sizeof(attrs) / sizeof(*attrs)) {
+                R_Call(glEnableVertexAttribArray, attrs[i].attr);
+                R_Call(glVertexAttribPointer, attrs[i].attr, attrs[i].size, attrs[i].type, attrs[i].norm, sizeof(vertex_t), (void *)(base * sizeof(vertex_t) + attrs[i].ofs));
+            }
+            if (channel) {
+                R_Call(glBindBuffer, GL_ARRAY_BUFFER, model->buffers[BZ_MDX_UV_BUFFER]);
+                R_Call(glVertexAttribPointer, attrib_texcoord, 2, GL_FLOAT, GL_FALSE, sizeof(vec2_t), (void *)((uintptr_t)(uvbase + (channel - 1) * geo->num_vertices) * sizeof(vec2_t)));
+            }
+            if (instanced) {
+                R_Call(glBindBuffer, GL_ARRAY_BUFFER, model->buffers[BZ_MDX_INSTANCE_BUFFER]);
+                FOR_LOOP(i, 4) {
+                    R_Call(glEnableVertexAttribArray, attrib_instance + i);
+                    R_Call(glVertexAttribPointer, attrib_instance + i, 4, GL_FLOAT, GL_FALSE, sizeof(mat4_t), (void *)(uintptr_t)(i * 4 * sizeof(float)));
+                    R_Call(glVertexAttribDivisor, attrib_instance + i, 1);
+                }
+            }
+        }
+        uvbase += MAX(0, geo->num_texcoordChannels - 1) * geo->num_vertices;
+        base += geo->num_vertices;
+    }
+}
+
+/* GPU caches are renderer-owned and writable; submissions keep authored model data const. Owner thread only. */
+void MDX_PrepareModelInstances(mdxModel_t const *asset) {
+    mdxModel_t *model = (mdxModel_t *)asset;
+    if (model->buffers[BZ_MDX_INSTANCE_BUFFER]) return;
+    R_Call(glGenBuffers, 1, &model->buffers[BZ_MDX_INSTANCE_BUFFER]);
+    MDX_BuildModelArrays(model, true);
+}
+
+/* Build compact model-owned GPU storage after all geoset blocks have been parsed. */
+void MDX_BuildBuffers(mdxModel_t *model) {
+    uint32_t verts = 0, elems = 0, uvcount = 0, uvbase = 0;
     FOR_EACH_LIST(mdxGeoset_t, geo, model->geosets) {
         verts += geo->num_vertices;
         elems += geo->num_triangles;
@@ -168,7 +211,7 @@ void MDX_BuildBuffers(mdxModel_t *model) {
     vertex_t *vertices = ri.MemAlloc(verts * sizeof(*vertices));
     uint16_t *indices = ri.MemAlloc(elems * sizeof(*indices));
     MDX_PackModelGeometry(model, vertices, indices);
-    R_Call(glGenBuffers, uvcount ? BZ_MDX_BUFFER_COUNT : BZ_MDX_UV_BUFFER, model->buffers);
+    R_Call(glGenBuffers, uvcount ? BZ_MDX_INSTANCE_BUFFER : BZ_MDX_UV_BUFFER, model->buffers);
     R_Call(glBindBuffer, GL_ARRAY_BUFFER, model->buffers[BZ_MDX_VERTEX_BUFFER]);
     R_Call(glBufferData, GL_ARRAY_BUFFER, verts * sizeof(*vertices), vertices, GL_STATIC_DRAW);
     if (uvcount) {
@@ -182,29 +225,20 @@ void MDX_BuildBuffers(mdxModel_t *model) {
         R_Call(glBufferData, GL_ARRAY_BUFFER, uvcount * sizeof(*uvs), uvs, GL_STATIC_DRAW);
         ri.MemFree(uvs);
     }
-    uvbase = 0;
-    base = 0;
-    FOR_EACH_LIST(mdxGeoset_t, geo, model->geosets) {
-        ARRAY_COUNT(geo->vaos) = MAX(1, geo->num_texcoordChannels);
-        geo->vaos = ri.MemAlloc(ARRAY_COUNT(geo->vaos) * sizeof(*geo->vaos));
-        R_Call(glGenVertexArrays, ARRAY_COUNT(geo->vaos), geo->vaos);
-        FOR_LOOP(channel, ARRAY_COUNT(geo->vaos)) {
-            R_Call(glBindVertexArray, geo->vaos[channel]);
-            R_Call(glBindBuffer, GL_ELEMENT_ARRAY_BUFFER, model->buffers[BZ_MDX_INDEX_BUFFER]);
-            R_Call(glBindBuffer, GL_ARRAY_BUFFER, model->buffers[BZ_MDX_VERTEX_BUFFER]);
-            FOR_LOOP(i, sizeof(attrs) / sizeof(*attrs)) {
-                R_Call(glEnableVertexAttribArray, attrs[i].attr);
-                R_Call(glVertexAttribPointer, attrs[i].attr, attrs[i].size, attrs[i].type, attrs[i].norm, sizeof(vertex_t), (void *)(base * sizeof(vertex_t) + attrs[i].ofs));
-            }
-            if (channel) {
-                R_Call(glBindBuffer, GL_ARRAY_BUFFER, model->buffers[BZ_MDX_UV_BUFFER]);
-                R_Call(glVertexAttribPointer, attrib_texcoord, 2, GL_FLOAT, GL_FALSE, sizeof(vec2_t), (void *)((uintptr_t)(uvbase + (channel - 1) * geo->num_vertices) * sizeof(vec2_t)));
-            }
-        }
-        uvbase += MAX(0, geo->num_texcoordChannels - 1) * geo->num_vertices;
-        base += geo->num_vertices;
-    }
+    MDX_BuildModelArrays(model, false);
     /* Upload once after binding a VAO: core GL owns the element-buffer binding in the VAO. */
     R_Call(glBufferData, GL_ELEMENT_ARRAY_BUFFER, elems * sizeof(*indices), indices, GL_STATIC_DRAW);
     ri.MemFree(indices); ri.MemFree(vertices);
+}
+
+/* Delete both model-owned binding families before their geometry/instance buffers are released. */
+void MDX_ReleaseGeosetArrays(mdxGeoset_t *geo) {
+    FOR_LOOP(kind, 2) {
+        uint32_t *vaos = kind ? geo->inst_vaos : geo->vaos;
+        uint32_t count = kind ? ARRAY_COUNT(geo->inst_vaos) : ARRAY_COUNT(geo->vaos);
+        if (!vaos) continue;
+        R_Call(glDeleteVertexArrays, count, vaos); ri.MemFree(vaos);
+    }
+    geo->vaos = geo->inst_vaos = NULL;
+    ARRAY_COUNT(geo->vaos) = ARRAY_COUNT(geo->inst_vaos) = 0;
 }

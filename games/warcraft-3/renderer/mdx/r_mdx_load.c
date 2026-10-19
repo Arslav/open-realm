@@ -865,8 +865,7 @@ void MDLX_ReleaseModelNode(mdxNode_t *node) {
 }
 
 void MDLX_ReleaseModelGeoset(mdxGeoset_t *geoset) {
-    if (geoset->vaos) R_Call(glDeleteVertexArrays, ARRAY_COUNT(geoset->vaos), geoset->vaos);
-    SAFE_DELETE(geoset->vaos, ri.MemFree);
+    MDX_ReleaseGeosetArrays(geoset);
     SAFE_DELETE(geoset->matrixPalette, ri.MemFree);
 
     SAFE_DELETE(geoset->next, MDLX_ReleaseModelGeoset);
@@ -981,18 +980,18 @@ void MDLX_ReleaseRibbonStates(mdxRibbonInstance_t *state) {
 /* GPU geometry and palettes can belong to a terrain-fitted copy whose authored arrays are borrowed. */
 void MDX_ReleaseBuffers(mdxModel_t *model) {
     FOR_EACH_LIST(mdxGeoset_t, geo, model->geosets) {
-        if (geo->vaos) R_Call(glDeleteVertexArrays, ARRAY_COUNT(geo->vaos), geo->vaos);
-        SAFE_DELETE(geo->vaos, ri.MemFree);
-        ARRAY_COUNT(geo->vaos) = 0;
+        MDX_ReleaseGeosetArrays(geo);
         SAFE_DELETE(geo->matrixPalette, ri.MemFree);
         geo->num_matrixPalette = 0;
     }
-    if (model->buffers[0] || model->buffers[1] || model->buffers[BZ_MDX_UV_BUFFER])
+    if (model->buffers[BZ_MDX_VERTEX_BUFFER] || model->buffers[BZ_MDX_INDEX_BUFFER] ||
+        model->buffers[BZ_MDX_INSTANCE_BUFFER] || model->buffers[BZ_MDX_UV_BUFFER])
         R_Call(glDeleteBuffers, BZ_MDX_BUFFER_COUNT, model->buffers);
     memset(model->buffers, 0, sizeof(model->buffers));
 }
 
 void MDLX_Release(mdxModel_t *model) {
+    MDLX_ClearPoseCache();
     MDLX_ReleaseSprites(model);
     MDLX_ForgetRibbonModel(model); /* drop registry entry and entity-less orphans before their model dies */
     SAFE_DELETE(model->ribbon_states, MDLX_ReleaseRibbonStates);

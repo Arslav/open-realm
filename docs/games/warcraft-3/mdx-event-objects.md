@@ -145,6 +145,20 @@ See [Land Mines](land-mines.md) for the gameplay chain.
 
 The terrain splat renderer accepts an explicit UV rectangle, so a SplatData atlas cell remains terrain-conforming even when the splat crosses tile boundaries and the generated polygons are clipped.  Atlas cells are numbered left-to-right, top-to-bottom from zero.  During `Lifespan`, the consumer advances once from `UVLifespanStart` to `UVLifespanEnd` while interpolating Start -> Middle colour; during `Decay`, it advances once from `UVDecayStart` to `UVDecayEnd` while interpolating Middle -> End colour.
 
+The retained solid-phase pass wraps `R_W3RenderEventSplat` in `R_BeginSplatBatch` /
+`R_EndSplatBatch`. `R_RenderRectSplatUV` appends to that explicit batch, flushing when
+texture or shader changes or the terrain vertex buffer fills. Outside a batch it
+still completes immediately, including the first presentation on an MDX event frame.
+Atlas UVs and colors remain per vertex. Pool traversal and alpha order are unchanged:
+A/A/B/B needs two submissions, while A/B/A/B still needs four. UberSplats use the
+same batching path with full-texture UVs. Ending a batch restores depth writes and
+polygon offset, and the next standalone call cannot inherit a deferred batch.
+The headless `renderer_terrain.atlas_splat_batch_preserves_vertices_and_texture_run_order`
+test compares emitted geometry/UV/color against immediate rendering and checks texture,
+shader and capacity boundaries; `renderer_game.retained_event_splats_batch_adjacent_atlas_textures`
+drives the actual retained-event pass, including alpha-phase suppression and expiry.
+See Android credits profiling (`performance.md#android-credits-profiling-october-2026`; section follows in this series).
+
 `LifespanRepeat` and `UVDecayRepeat` are parsed and retained but not yet applied: their exact retail repeat-count/wrap contract remains unverified. Likewise `BlendMode`, `Water`, and `Sound` are preserved but not guessed into renderer/audio behavior. A used row with one of those unsupported non-default fields produces one bounded warning, so the partial presentation contract is not silent. This keeps the implemented subset deterministic and data-driven without approximating the remaining semantics.
 
 When both `Lifespan` and `Decay` are zero, the current approximation draws the

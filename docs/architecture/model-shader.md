@@ -131,6 +131,73 @@ source-alpha blending for that instance. This is required for transient model op
 alpha multiplication alone cannot make a `BLEND_MODE_NONE` layer translucent while GL blending remains disabled. Alpha zero retains its
 existing sentinel meaning of unmodified/white rather than invisible.
 
+## Game-owned skinned instances
+
+Immediate and instanced programs must project the same affine world position:
+first `worldPos4 = model * position` (or `a_instance * position`), restore W to
+one, then use the common `u_viewProjection * worldPos4`. Texture and shadow
+coordinates consume that same value. Do not reassociate the immediate path
+to `(u_viewProjection * u_model) * position`: floating-point rounding differs
+from `u_viewProjection * (a_instance * position)`. A model may combine
+instanced opaque geometry with immediate coplanar alpha layers, exposing the
+difference as depth fighting during animation. No depth bias is needed.
+
+The October 17 Honor/Mali-G52 MC2 investigation reproduced differing clip
+coordinates for 61,431 of 61,440 vertices using the actual generated programs
+and GLES transform feedback. After sharing the projection order, all 61,440
+were bit-identical. The user confirmed idle Headhunter jitter disappeared in
+both WC3 palette transports. `renderer_shader.model_variants_share_affine_projection_order`
+guards generated source; `mdx_geoset.layered_model_mixes_instanced_solid_with_immediate_alpha`
+covers the mixed submission path. See [WC3 performance](../games/warcraft-3/performance.md).
+
+The shared vertex body reads bones through `BZ_MODEL_BONE(i)`, whose default
+is the existing fixed uniform palette. Zero-weight influences are skipped,
+and each active bone matrix is fetched once for position and normal.
+Ordinary MDX/M2/M3 programs keep their existing state and palette contract.
+
+WC3's world MDX renderer owns a private `mdx_instances` descriptor and typed
+state. It clones `sd_model`, prefixes the vertex body with a bone-texture
+accessor, and appends palette-offset, texture and texture-size values to a
+struct containing the complete `modelProg_t` prefix. Descriptor offsets and
+state size are relative to that prefix's `state`, including the extension.
+Both descriptor and generated body live until renderer shutdown, since the
+backend retains the descriptor pointer. `R_ShaderDefines(true)` supplies the
+same fog, lighting, shadow and instancing defines as the ordinary variant.
+
+Each actor keeps its own sampled bone matrices. A local palette index maps
+to a compact packet slot for the authored sparse node ID; slot zero is
+identity for invalid indices. Only bones referenced by visible geosets are
+uploaded; ancestors still participate in CPU pose evaluation. Three
+nearest-filtered RGBA32F texels store the complete affine XYZ rows, including
+translation. The shader reconstructs the constant final row `(0,0,0,1)`;
+rotation, nonuniform bone scaling and float precision are preserved. Sampler unit
+3 follows diffuse (0), shadow (1) and fog-of-war (2); floating-point linear
+filtering is unnecessary. The instance matrix's affine `[3].w` carries the
+exact integer palette base plus one. The generic instanced vertex path
+restores transformed position W to one before projection; XYZ placement and
+the normal basis retain their existing values. No network or common model
+state field is added.
+
+Packets preserve submission order, drain before water/resource replacement,
+and restore the previous phase and program. Singleton, UI and incompatible
+draws use the existing immediate shader. GPU texture/VBO and CPU staging
+storage are owned by the game renderer and deleted before context teardown.
+
+The explicit `r_mdx_uniform_instancing 1` variant keeps the ordinary
+128-matrix uniform array and appends only a typed integer palette stride.
+Each geoset uploads a separate palette per actor, and packet size is bounded
+by `128 / largest_geoset_palette`; no index is clamped to make a packet fit.
+Instance `[3].w` then carries actor index plus one. This trades more draws
+for zero vertex-texture reads. It owns a distinct descriptor/program/body,
+uses the same sampled affine matrices and preserves the same alpha ordering.
+`r_mdx_uniform_auto` defaults to 1 on Android and 0 elsewhere. It uses that
+same uniform shader only when an existing complete packet fits all geoset
+palettes, preserving packet boundaries. For a texture-only device comparison,
+set both `r_mdx_uniform_auto` and `r_mdx_uniform_instancing` to zero.
+See automatic transport measurements (`../games/warcraft-3/performance.md#automatic-mdx-uniform-transport-on-android-october-17`; section follows in this series).
+See WC3 performance (`../games/warcraft-3/performance.md#honor-200-actor-performance`; section follows in this series)
+for eligibility, cache lifetime, regression coverage and device measurements.
+
 ## Extension rule
 
 Do not add a special count value, a second uniform family, or a per-game shader branch when an existing entry can encode the state. Extend the common schema only when authoritative data requires another value. If the common representation is genuinely incapable of expressing a title's behavior, document the exact constraint before adding an exception.

@@ -76,13 +76,28 @@ The renderer registers these required models through the normal model registry. 
 
 `MDLX_CollectAttachmentPositions()` lives in the MDX animation layer because attachment pivots must use the same interpolated node hierarchy as the visible model. It:
 
-1. evaluates the current/old model frames;
-2. resolves attachment-node visibility;
+1. filters authored names and resolves attachment-node visibility;
+2. evaluates the current/old model frames when the first visible match needs a pose;
 3. transforms the attachment pivot through the node hierarchy;
 4. transforms the resulting local point through the building model matrix;
 5. returns matching authored names and world positions.
 
 The building renderer filters the returned `Sprite ` attachments by semantic names (`Sprite First`, `Sprite Second`, and so on). It must not assume linked-list order and must not invent random offsets when an authored slot is absent.
+
+An empty list, unmatched prefix or entirely hidden set returns without rebinding the
+shared node matrices. Visible results still evaluate the complete hierarchy once per
+query. `origin` includes the authored pivot transformed into world space; `transform`
+is the model-times-node basis used by embedded child models, without adding that pivot
+to its translation a second time.
+
+`R_W3RenderAttachmentModels` skips this query when every authored attachment path is
+empty: those records are effect sockets, not embedded child art. They remain available
+through `R_EntityAttachmentPosition` and building-fire `Sprite ` queries. A later nonempty
+path in the list still renders with the existing transform and parent-to-child Birth
+time mapping. The regression tests are
+`renderer_model.mdx_attachment_query_binds_pose_only_for_a_visible_match` and
+`renderer_game.model_draw_skips_attachment_pose_without_children_and_keeps_child_birth_transform`.
+See Honor attachment profiling (`performance.md#lazy-attachment-poses`; section follows in this series) for the measured motivation.
 
 ## Network Contract
 

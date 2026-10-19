@@ -9,13 +9,23 @@
 #include <stdlib.h>
 #include <setjmp.h>
 
-static cparticle_t emitted[16];
+static struct {
+    bool active;
+    uint32_t uploads, count;
+    vertex_t vertices[128];
+} splat_capture;
+
+static cparticle_t emitted[512];
 static uint32_t emit_count;
 cparticle_t *R_SpawnParticle(void) {
-    T_ASSERT(emit_count < 16);
+    T_ASSERT(emit_count < sizeof(emitted) / sizeof(*emitted));
+    if (emit_count >= sizeof(emitted) / sizeof(*emitted)) return NULL;
     emitted[emit_count] = (cparticle_t){ .size_value_scale = 1, .size_time_scale = 1 };
     return &emitted[emit_count++];
 }
+void R_TestResetParticles(void) { emit_count = 0; }
+uint32_t R_TestParticleCount(void) { return emit_count; }
+cparticle_t const *R_TestParticle(uint32_t index) { return emitted + index; }
 texture_t const *MDLX_GetTexture(mdxModel_t const *model, uint32_t team, uint32_t tex, uint32_t repl, texture_t const *over, uint32_t slot) {
     (void)model; (void)team; (void)tex; (void)repl; (void)over; (void)slot; return NULL;
 }
@@ -54,6 +64,7 @@ static struct {
     GLenum fail;
     GLint logsize;
     int creates, links, uses, logs, deleted, uploads, exitcode;
+    GLuint bound;
     bool noalloc;
     handle_t memory;
 } shader_test;
@@ -64,7 +75,7 @@ static void BZ_TestCompileShader(GLuint obj) { (void)obj; }
 static void BZ_TestAttachShader(GLuint obj, GLuint shader) { (void)obj; (void)shader; }
 static void BZ_TestBindAttrib(GLuint obj, GLuint idx, GLchar const *name) { (void)obj; (void)idx; (void)name; }
 static void BZ_TestLinkProgram(GLuint obj) { (void)obj; shader_test.links++; }
-static void BZ_TestUseProgram(GLuint obj) { (void)obj; shader_test.uses++; }
+static void BZ_TestUseProgram(GLuint obj) { shader_test.bound = obj; shader_test.uses++; }
 static void BZ_TestDeleteShader(GLuint obj) { (void)obj; shader_test.deleted++; }
 static GLint BZ_TestUniformLocation(GLuint obj, GLchar const *name) { (void)obj; (void)name; return 0; }
 static struct { int calls, width, integer; GLsizei count; GLboolean transpose; float data[2048]; } upload;
@@ -121,11 +132,21 @@ static _Noreturn void BZ_TestShaderExit(int code) { shader_test.exitcode = code;
 #define glGetShaderInfoLog BZ_TestShaderLog
 #define glGetProgramInfoLog BZ_TestShaderLog
 #define malloc BZ_TestShaderMalloc
-#define exit BZ_TestShaderExit
+#define Sys_Exit BZ_TestShaderExit
 #include "renderer/r_shader.c"
 static void test_shader_source(GLuint stage, shader_desc_t const *desc, bool vertex, char const *defines) {
     gs_options_t options = R_ShaderOptions(defines);
     T_ASSERT(gs_source(stage, desc, vertex, &options));
+}
+bool R_TestBoneSamplerPrecision(shaderLoad_t const *load) {
+    gs_options_t options = { .dialect = GLSL_DIALECT_ES3, .defines = load->defines };
+    FOR_LOOP(stage, 2) {
+        T_ASSERT(gs_source(1, load->desc, stage == 0, &options));
+        char const *decl = strstr(shader_src, "uniform sampler2D u_boneTexture;");
+        char const *precision = strstr(shader_src, "precision highp sampler2D;");
+        if (!decl || !precision || precision > decl) return false;
+    }
+    return true;
 }
 #undef glShaderSource
 #undef glCreateShader
@@ -152,9 +173,11 @@ static void test_shader_source(GLuint stage, shader_desc_t const *desc, bool ver
 #undef glGetShaderInfoLog
 #undef glGetProgramInfoLog
 #undef malloc
-#undef exit
+#undef Sys_Exit
 
-refImport_t ri;
+/* The headless renderer still supplies mandatory imports, even when no override is needed. */
+static cstring_t test_default_cvar(cstring_t name, cstring_t fallback) { (void)name; return fallback; }
+refImport_t ri = {.CvarString = test_default_cvar};
 void R_ClearEntityCameraParticleScenes(void) {}
 struct render_globals tr;
 static uint32_t load_count, release_count, register_count;
@@ -217,16 +240,53 @@ static struct { uint32_t calls, first, count, instances, stats_count, stats_inst
 void R_StatsDraw(GLenum mode, uint32_t count, uint32_t instances) {
     (void)mode; draw_test.stats_count = count; draw_test.stats_instances = instances;
 }
-static void test_genva(GLsizei n, GLuint *ids) { while (n--) *ids++ = 7; }
-static void test_bindva(GLuint id) { (void)id; }
-static void test_bindbuf(GLenum target, GLuint id) { (void)target; (void)id; }
-static void test_enableattr(GLuint index) { (void)index; }
+static struct {
+    bool active, buffers[128], arrays[128];
+    uint32_t next, vao, array;
+    size_t sizes[128];
+    struct {
+        uint32_t element;
+        struct { uint32_t buffer, divisor; GLint size; GLenum type; GLboolean norm; GLsizei stride; uintptr_t offset; bool enabled; } attr[16];
+    } vaos[128];
+} mdx_gpu;
+
+static void test_genva(GLsizei n, GLuint *ids) {
+    while (n--) {
+        if (!mdx_gpu.active) { *ids++ = 7; continue; }
+        T_ASSERT(mdx_gpu.next + 1 < 128); *ids = ++mdx_gpu.next; mdx_gpu.arrays[*ids++] = true;
+    }
+}
+static void test_genbuf(GLsizei n, GLuint *ids) {
+    if (!mdx_gpu.active) { test_genva(n, ids); return; }
+    while (n--) { T_ASSERT(mdx_gpu.next + 1 < 128); *ids = ++mdx_gpu.next; mdx_gpu.buffers[*ids++] = true; }
+}
+static void test_bindva(GLuint id) {
+    if (!mdx_gpu.active) return;
+    T_ASSERT(id < 128 && mdx_gpu.arrays[id]); mdx_gpu.vao = id;
+}
+static void test_bindbuf(GLenum target, GLuint id) {
+    if (!mdx_gpu.active) return;
+    T_ASSERT(id < 128 && mdx_gpu.buffers[id]);
+    if (target == GL_ARRAY_BUFFER) mdx_gpu.array = id;
+    else if (target == GL_ELEMENT_ARRAY_BUFFER) mdx_gpu.vaos[mdx_gpu.vao].element = id;
+}
+static void test_enableattr(GLuint index) {
+    if (mdx_gpu.active) { T_ASSERT(index < 16); mdx_gpu.vaos[mdx_gpu.vao].attr[index].enabled = true; }
+}
 static struct { bool active; vec2_t data[3]; GLsizei stride; uintptr_t offset; int uploads; } uv_upload;
 static void test_attrptr(GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, void const *ptr) {
     (void)index; (void)size; (void)type; (void)normalized; (void)stride; (void)ptr;
+    if (mdx_gpu.active) {
+        T_ASSERT(index < 16);
+        typeof(mdx_gpu.vaos[0].attr[0]) *a = &mdx_gpu.vaos[mdx_gpu.vao].attr[index];
+        a->buffer = mdx_gpu.array; a->size = size; a->type = type; a->norm = normalized;
+        a->stride = stride; a->offset = (uintptr_t)ptr;
+    }
     if (uv_upload.active && index == attrib_texcoord) { uv_upload.stride = stride; uv_upload.offset = (uintptr_t)ptr; }
 }
-static void test_divisor(GLuint index, GLuint divisor) { (void)index; (void)divisor; }
+static void test_divisor(GLuint index, GLuint divisor) {
+    if (mdx_gpu.active) { T_ASSERT(index < 16); mdx_gpu.vaos[mdx_gpu.vao].attr[index].divisor = divisor; }
+}
 static void test_drawarrays(GLenum mode, GLint first, GLsizei count) {
     (void)mode; draw_test.calls++; draw_test.first = first; draw_test.count = count; draw_test.instances = 1;
 }
@@ -237,14 +297,32 @@ static void test_drawarrays_inst(GLenum mode, GLint first, GLsizei count, GLsize
  * calls so these headless tests also run on macOS without a current context. */
 static void test_bufdata(GLenum target, GLsizeiptr size, void const *data, GLenum usage) {
     (void)target; (void)size; (void)data; (void)usage;
+    if (mdx_gpu.active) {
+        uint32_t buffer = target == GL_ARRAY_BUFFER ? mdx_gpu.array : mdx_gpu.vaos[mdx_gpu.vao].element;
+        T_ASSERT(buffer && mdx_gpu.buffers[buffer]); mdx_gpu.sizes[buffer] = size;
+    }
     if (uv_upload.active && target == GL_ARRAY_BUFFER && size == sizeof(uv_upload.data)) {
         memcpy(uv_upload.data, data, size); uv_upload.uploads++;
     }
 }
-static void test_delete_ids(GLsizei count, GLuint const *ids) { (void)count; (void)ids; }
-#define glGenBuffers test_genva
+static void test_delete_ids(GLsizei count, GLuint const *ids) {
+    if (mdx_gpu.active) FOR_LOOP(i, count) if (ids[i]) {
+        T_ASSERT(ids[i] < 128 && mdx_gpu.arrays[ids[i]]); mdx_gpu.arrays[ids[i]] = false;
+    }
+}
+static void test_delete_buf(GLsizei count, GLuint const *ids) {
+    if (mdx_gpu.active) FOR_LOOP(i, count) if (ids[i]) {
+        T_ASSERT(ids[i] < 128 && mdx_gpu.buffers[ids[i]]);
+        FOR_LOOP(j, 128) if (mdx_gpu.arrays[j]) {
+            T_NE(mdx_gpu.vaos[j].element, ids[i]);
+            FOR_LOOP(k, 16) T_NE(mdx_gpu.vaos[j].attr[k].buffer, ids[i]);
+        }
+        mdx_gpu.buffers[ids[i]] = false;
+    }
+}
+#define glGenBuffers test_genbuf
 #define glBufferData test_bufdata
-#define glDeleteBuffers test_delete_ids
+#define glDeleteBuffers test_delete_buf
 #define glDeleteVertexArrays test_delete_ids
 #define glGenVertexArrays test_genva
 #define glBindVertexArray test_bindva
@@ -410,6 +488,406 @@ TEST(renderer_model, mdx_keytrack_binary_lookup_preserves_sequence_semantics) {
     MDLX_GetModelKeytrackValue(&model, track, 100, &value); T_FEQ(value, 1.5f, 0.001f);
     MDLX_GetModelKeytrackValue(&model, track, 250, &value); T_FEQ(value, 2.5f, 0.001f);
     MDLX_GetModelKeytrackValue(&model, track, 325, &value); T_FEQ(value, 2.625f, 0.001f);
+}
+
+extern _Atomic uint32_t MDLX_TestPoseEvaluations;
+extern _Atomic uint32_t MDLX_TestNodeEvaluations;
+void MDLX_TestResetPoseCache(void);
+
+/* Solid/alpha/event consumers must restore their own sparse pose after another instance overwrites scratch. */
+TEST(renderer_model, mdx_pose_cache_restores_interleaved_instances_and_billboard_nodes) {
+    viewDef_t saved = tr.viewDef;
+    mdxNode_t root = { .node_id = 3, .parent_id = (uint32_t)-1 };
+    mdxNode_t child = { .node_id = 51, .parent_id = 3, .flags = MDLXNODE_Billboarded };
+    vec3_t pivots[52] = {[3] = {1, 2, 3}, [51] = {4, 5, 6}};
+    mdxModel_t model = { .num_nodes = 2, .node_list = {&child, &root}, .num_pivots = 52, .pivots = pivots };
+    mat4_t a, b, first[2], second[2];
+    model.nodes[3] = &root; model.nodes[51] = &child;
+    Matrix4_identity(&a); Matrix4_identity(&b); Matrix4_rotate(&b, &(vec3_t){0, 0, 63}, ROTATE_XYZ);
+    tr.viewDef = (viewDef_t){ .time = 100, .lerpfrac = 0.37f };
+    Matrix4_identity(&tr.viewDef.viewProjectionMatrix);
+    MDLX_TestResetPoseCache();
+    MDLX_BindBoneMatrices(&model, &a, 200, 100); first[0] = node_matrices[3]; first[1] = node_matrices[51];
+    MDLX_BindBoneMatrices(&model, &b, 250, 150); second[0] = node_matrices[3]; second[1] = node_matrices[51];
+    T_ASSERT(memcmp(first, second, sizeof(first)) != 0);
+    MDLX_BindBoneMatrices(&model, &a, 200, 100);
+    T_EQ(MDLX_TestPoseEvaluations, 2);
+    T_EQ(memcmp(&node_matrices[3], &first[0], sizeof(mat4_t)), 0);
+    T_EQ(memcmp(&node_matrices[51], &first[1], sizeof(mat4_t)), 0);
+    MDLX_BindBoneMatrices(&model, &b, 250, 150);
+    T_EQ(MDLX_TestPoseEvaluations, 2);
+    T_EQ(memcmp(&node_matrices[51], &second[1], sizeof(mat4_t)), 0);
+    MDLX_TestResetPoseCache(); tr.viewDef = saved;
+}
+
+TEST(renderer_model, mdx_pose_cache_keys_time_lerp_frames_model_transform_and_view) {
+    viewDef_t saved = tr.viewDef;
+    mdxNode_t node = { .parent_id = (uint32_t)-1, .flags = MDLXNODE_Billboarded };
+    mdxModel_t model = { .nodes = {&node}, .node_list = {&node}, .num_nodes = 1 };
+    mdxModel_t other = model;
+    mat4_t matrix;
+    Matrix4_identity(&matrix); tr.viewDef = (viewDef_t){ .time = 100, .lerpfrac = 0.2f };
+    MDLX_TestResetPoseCache();
+    MDLX_BindBoneMatrices(&model, &matrix, 200, 100);
+    MDLX_BindBoneMatrices(&model, &matrix, 200, 100); T_EQ(MDLX_TestPoseEvaluations, 1);
+    MDLX_BindBoneMatrices(&other, &matrix, 200, 100); T_EQ(MDLX_TestPoseEvaluations, 2);
+    MDLX_BindBoneMatrices(&model, &matrix, 201, 100); T_EQ(MDLX_TestPoseEvaluations, 3);
+    MDLX_BindBoneMatrices(&model, &matrix, 200, 101); T_EQ(MDLX_TestPoseEvaluations, 4);
+    matrix.v[12] = 17;
+    MDLX_BindBoneMatrices(&model, &matrix, 200, 100); T_EQ(MDLX_TestPoseEvaluations, 5);
+    tr.viewDef.lerpfrac = 0.3f;
+    MDLX_BindBoneMatrices(&model, &matrix, 200, 100); T_EQ(MDLX_TestPoseEvaluations, 6);
+    tr.viewDef.time++;
+    MDLX_BindBoneMatrices(&model, &matrix, 200, 100); T_EQ(MDLX_TestPoseEvaluations, 7);
+    tr.viewDef.viewProjectionMatrix.v[0] = 2;
+    MDLX_BindBoneMatrices(&model, &matrix, 200, 100); T_EQ(MDLX_TestPoseEvaluations, 8);
+    MDLX_BindBoneMatrices(&model, &matrix, 200, 100); T_EQ(MDLX_TestPoseEvaluations, 8);
+    tr.viewDef.time = 0; /* A missing render clock lets global tracks read SDL time independently. */
+    MDLX_BindBoneMatrices(&model, &matrix, 200, 100);
+    MDLX_BindBoneMatrices(&model, &matrix, 200, 100); T_EQ(MDLX_TestPoseEvaluations, 10);
+    MDLX_TestResetPoseCache(); tr.viewDef = saved;
+}
+
+TEST(renderer_model, mdx_pose_cache_global_tracks_advance_with_render_clock) {
+    viewDef_t saved = tr.viewDef;
+    uint8_t storage[sizeof(mdxKeyTrack_t) + 2 * (sizeof(int) + sizeof(vec3_t))] = {0};
+    mdxKeyTrack_t *track = (mdxKeyTrack_t *)storage;
+    *track = (mdxKeyTrack_t){ .keyframeCount = 2, .datatype = TDATA_FLOAT3, .linetype = TRACK_LINEAR };
+    FOR_LOOP(i, 2) {
+        mdxKeyFrame_t *key = (mdxKeyFrame_t *)((uint8_t *)track->values + i * (sizeof(int) + sizeof(vec3_t)));
+        vec3_t value = {1 + 10 * i, 2 + 10 * i, 3 + 10 * i};
+        key->time = i * 500; memcpy(key->data, &value, sizeof(value));
+    }
+    mdxGlobalSequence_t seq = { .value = 1000 };
+    mdxNode_t node = { .parent_id = (uint32_t)-1, .translation = track };
+    mdxModel_t model = { .nodes = {&node}, .node_list = {&node}, .num_nodes = 1,
+        .globalSequences = &seq, .num_globalSequences = 1 };
+    mat4_t matrix;
+    Matrix4_identity(&matrix); tr.viewDef = (viewDef_t){ .time = 100, .lerpfrac = 0.2f };
+    MDLX_TestResetPoseCache();
+    MDLX_BindBoneMatrices(&model, &matrix, 333, 333); T_FEQ(node_matrices[0].v[12], 3, 0.001f);
+    node_matrices[0].v[12] = 999;
+    MDLX_BindBoneMatrices(&model, &matrix, 333, 333); T_FEQ(node_matrices[0].v[12], 3, 0.001f);
+    T_EQ(MDLX_TestPoseEvaluations, 1);
+    tr.viewDef.time = 200;
+    MDLX_BindBoneMatrices(&model, &matrix, 333, 333); T_FEQ(node_matrices[0].v[12], 5, 0.001f);
+    T_EQ(MDLX_TestPoseEvaluations, 2);
+    MDLX_TestResetPoseCache(); tr.viewDef = saved;
+}
+
+TEST(renderer_model, mdx_pose_cache_model_release_invalidates_reused_address) {
+    viewDef_t saved = tr.viewDef;
+    mdxNode_t node = { .parent_id = (uint32_t)-1 };
+    mdxModel_t model = { .nodes = {&node}, .node_list = {&node}, .num_nodes = 1 };
+    mat4_t matrix;
+    Matrix4_identity(&matrix); tr.viewDef = (viewDef_t){ .time = 100, .lerpfrac = 0.2f };
+    MDLX_TestResetPoseCache();
+    MDLX_BindBoneMatrices(&model, &matrix, 200, 100);
+    MDLX_Release(&model); /* The fixture has no heap-owned records, but exercises the production release owner. */
+    MDLX_BindBoneMatrices(&model, &matrix, 200, 100); T_EQ(MDLX_TestPoseEvaluations, 2);
+    T_FEQ(node_matrices[0].v[15], 1, 0.001f);
+    MDLX_TestResetPoseCache(); tr.viewDef = saved;
+}
+
+/* Exhaust the entry and matrix budgets independently; overflow must still render complete uncached poses. */
+TEST(renderer_model, mdx_pose_cache_capacity_never_drops_nodes_or_evicts_live_poses) {
+    viewDef_t saved = tr.viewDef;
+    mdxNode_t nodes[128] = {0};
+    mdxModel_t model = {0};
+    mat4_t matrix;
+    FOR_LOOP(i, 128) {
+        nodes[i] = (mdxNode_t){ .node_id = i, .parent_id = (uint32_t)-1 };
+        model.nodes[i] = model.node_list[i] = &nodes[i];
+    }
+    nodes[0].flags = MDLXNODE_Billboarded;
+    FOR_LOOP(test, 2) {
+        uint32_t count = test ? 600 : 1100;
+        model.num_nodes = test ? 128 : 1;
+        Matrix4_identity(&matrix); tr.viewDef = (viewDef_t){ .time = 100, .lerpfrac = 0.2f };
+        MDLX_TestResetPoseCache();
+        FOR_LOOP(i, count) {
+            matrix.v[12] = i;
+            MDLX_BindBoneMatrices(&model, &matrix, 200, 100);
+        }
+        T_EQ(MDLX_TestPoseEvaluations, count);
+        matrix.v[12] = 0;
+        MDLX_BindBoneMatrices(&model, &matrix, 200, 100); T_EQ(MDLX_TestPoseEvaluations, count);
+        matrix.v[12] = count - 1;
+        MDLX_BindBoneMatrices(&model, &matrix, 200, 100); T_EQ(MDLX_TestPoseEvaluations, count + 1);
+        T_FEQ(node_matrices[model.num_nodes - 1].v[15], 1, 0.001f);
+        tr.viewDef.time++;
+        MDLX_BindBoneMatrices(&model, &matrix, 200, 100);
+        MDLX_BindBoneMatrices(&model, &matrix, 200, 100); T_EQ(MDLX_TestPoseEvaluations, count + 2);
+    }
+    MDLX_TestResetPoseCache(); tr.viewDef = saved;
+}
+
+TEST(renderer_model, mdx_pose_cache_shares_instance_independent_skeletons) {
+    viewDef_t saved = tr.viewDef;
+    mdxNode_t root = { .node_id = 3, .parent_id = (uint32_t)-1 };
+    mdxNode_t child = { .node_id = 51, .parent_id = 3 };
+    mdxModel_t model = { .num_nodes = 2, .node_list = {&child, &root} };
+    mat4_t a, b, first[2];
+    model.nodes[3] = &root; model.nodes[51] = &child;
+    Matrix4_identity(&a); b = a; Matrix4_rotate(&b, &(vec3_t){0, 0, 63}, ROTATE_XYZ);
+    a.v[12] = 10; b.v[12] = 200;
+    tr.viewDef = (viewDef_t){ .time = 100, .lerpfrac = 0.37f };
+    MDLX_TestResetPoseCache();
+    MDLX_BindBoneMatrices(&model, &a, 200, 100); first[0] = node_matrices[3]; first[1] = node_matrices[51];
+    MDLX_BindBoneMatrices(&model, &b, 200, 100);
+    T_EQ(MDLX_TestPoseEvaluations, 1);
+    T_EQ(memcmp(&node_matrices[3], &first[0], sizeof(mat4_t)), 0);
+    T_EQ(memcmp(&node_matrices[51], &first[1], sizeof(mat4_t)), 0);
+    /* Placement remains per-instance after skinning; sharing the local pose must not move one actor onto another. */
+    vec3_t point = Matrix4_multiply_vector3(&node_matrices[51], &(vec3_t){0});
+    vec3_t world_a = Matrix4_multiply_vector3(&a, &point), world_b = Matrix4_multiply_vector3(&b, &point);
+    T_FEQ(world_a.x, 10, 0.001f); T_FEQ(world_b.x, 200, 0.001f);
+    MDLX_TestResetPoseCache(); tr.viewDef = saved;
+}
+
+TEST(renderer_model, mdx_partial_pose_shares_geometry_but_keeps_billboard_consumers_independent) {
+    viewDef_t saved = tr.viewDef;
+    mdxNode_t root = {.node_id = 3, .parent_id = (uint32_t)-1};
+    mdxNode_t child = {.node_id = 51, .parent_id = 3};
+    mdxNode_t effect = {.node_id = 52, .parent_id = 3, .flags = MDLXNODE_Billboarded};
+    mdxModel_t model = {.num_nodes = 3, .node_list = {&child, &effect, &root}};
+    model.nodes[3] = &root; model.nodes[51] = &child; model.nodes[52] = &effect;
+    mat4_t a, b, first;
+    Matrix4_identity(&a); b = a; Matrix4_rotate(&b, &(vec3_t){0, 0, 63}, ROTATE_XYZ);
+    a.v[12] = 10; b.v[12] = 200;
+    mdxPoseMask_t mask = {[51 / 32] = 1u << (51 % 32)};
+    tr.viewDef = (viewDef_t){.time = 100, .lerpfrac = 0.37f}; Matrix4_identity(&tr.viewDef.viewProjectionMatrix); MDLX_TestResetPoseCache();
+    MDLX_BindBoneSubset(&model, &a, 200, 100, mask);
+    MDLX_BindBoneSubset(&model, &b, 200, 100, mask);
+    T_EQ(MDLX_TestPoseEvaluations, 1); T_EQ(MDLX_TestNodeEvaluations, 2);
+    mask[51 / 32] = 1u << (52 % 32);
+    MDLX_BindBoneSubset(&model, &a, 200, 100, mask); first = node_matrices[52];
+    MDLX_BindBoneSubset(&model, &b, 200, 100, mask);
+    T_ASSERT(memcmp(&first, &node_matrices[52], sizeof(first)) != 0);
+    mask[51 / 32] = 1u << (51 % 32);
+    uint32_t before = MDLX_TestNodeEvaluations;
+    MDLX_BindBoneSubset(&model, &b, 200, 100, mask); T_EQ(MDLX_TestNodeEvaluations, before);
+    T_FEQ(node_matrices[51].v[15], 1, 0.001f);
+    /* A billboard ancestor makes the requested geometry basis-dependent as well. */
+    root.flags = MDLXNODE_Billboarded; MDLX_TestResetPoseCache();
+    MDLX_BindBoneSubset(&model, &a, 200, 100, mask); first = node_matrices[51];
+    MDLX_BindBoneSubset(&model, &b, 200, 100, mask);
+    T_EQ(MDLX_TestPoseEvaluations, 2); T_ASSERT(memcmp(&first, &node_matrices[51], sizeof(first)) != 0);
+    MDLX_TestResetPoseCache(); tr.viewDef = saved;
+}
+
+/* Geometry can request a leaf; ancestors are mandatory and later socket/full consumers must expand the same cache. */
+TEST(renderer_model, mdx_partial_pose_builds_ancestors_and_expands_without_stale_nodes) {
+    viewDef_t saved = tr.viewDef;
+    mdxNode_t root = { .node_id = 0, .parent_id = (uint32_t)-1 };
+    mdxNode_t child = { .node_id = 3, .parent_id = 0 }, other = { .node_id = 7, .parent_id = (uint32_t)-1 };
+    mdxNode_t sibling = { .node_id = 10, .parent_id = 0 };
+    mdxModel_t model = { .num_nodes = 4, .node_list = {&child, &sibling, &root, &other} };
+    model.nodes[0] = &root; model.nodes[3] = &child; model.nodes[7] = &other; model.nodes[10] = &sibling;
+    mdxPoseMask_t mask = {[0] = 1u << 3};
+    mat4_t matrix;
+    Matrix4_identity(&matrix); tr.viewDef = (viewDef_t){ .time = 100, .lerpfrac = 0.2f };
+    MDLX_TestResetPoseCache();
+    MDLX_BindBoneSubset(&model, &matrix, 200, 100, mask);
+    T_EQ(MDLX_TestNodeEvaluations, 2);
+    T_FEQ(node_matrices[0].v[15], 1, 0.001f); T_FEQ(node_matrices[3].v[15], 1, 0.001f);
+    T_FEQ(node_matrices[7].v[15], 0, 0.001f); T_FEQ(node_matrices[10].v[15], 0, 0.001f);
+    node_matrices[3].v[12] = 999;
+    MDLX_BindBoneSubset(&model, &matrix, 200, 100, mask);
+    T_EQ(MDLX_TestNodeEvaluations, 2); T_FEQ(node_matrices[3].v[12], 0, 0.001f);
+    mask[0] = 1u << 7;
+    MDLX_BindBoneSubset(&model, &matrix, 200, 100, mask); T_EQ(MDLX_TestNodeEvaluations, 3);
+    MDLX_BindBoneMatrices(&model, &matrix, 200, 100); T_EQ(MDLX_TestNodeEvaluations, 4);
+    T_FEQ(node_matrices[10].v[15], 1, 0.001f);
+    MDLX_BindBoneMatrices(&model, &matrix, 200, 100); T_EQ(MDLX_TestNodeEvaluations, 4);
+    tr.viewDef.time++;
+    mask[0] = 1u << 3;
+    MDLX_BindBoneSubset(&model, &matrix, 200, 100, mask); T_EQ(MDLX_TestNodeEvaluations, 6);
+    T_FEQ(node_matrices[7].v[15], 0, 0.001f); T_FEQ(node_matrices[10].v[15], 0, 0.001f);
+    MDLX_TestResetPoseCache(); tr.viewDef = saved;
+}
+
+TEST(renderer_model, mdx_pose_sampling_reuses_sequence_bounds_only_within_the_current_pose) {
+    extern _Atomic uint32_t MDLX_TestSequenceLookups, MDLX_TestTrackBounds;
+    uint8_t storage[sizeof(mdxKeyTrack_t) + 4 * (sizeof(int) + sizeof(vec3_t))] = {0};
+    mdxKeyTrack_t *track = (mdxKeyTrack_t *)storage;
+    *track = (mdxKeyTrack_t){.keyframeCount = 4, .datatype = TDATA_FLOAT3,
+        .linetype = TRACK_LINEAR, .globalSeqId = (uint32_t)-1};
+    int times[] = {0, 400, 600, 900};
+    FOR_LOOP(i, 4) {
+        mdxKeyFrame_t *key = (mdxKeyFrame_t *)((uint8_t *)track->values + i * (sizeof(int) + sizeof(vec3_t)));
+        key->time = times[i]; vec3_t v = {10 * i, 0, 0}; memcpy(key->data, &v, sizeof(v));
+    }
+    mdxSequence_t seqs[] = {{.interval = {0, 500}}, {.interval = {600, 1000}}};
+    mdxNode_t a = {.node_id = 0, .parent_id = (uint32_t)-1, .translation = track};
+    mdxNode_t b = {.node_id = 3, .parent_id = (uint32_t)-1, .translation = track};
+    mdxModel_t model = {.num_nodes = 2, .node_list = {&a, &b}, .nodes = {[0] = &a, [3] = &b},
+        .sequences = seqs, .num_sequences = 2};
+    viewDef_t saved = tr.viewDef; mat4_t matrix; Matrix4_identity(&matrix);
+    tr.viewDef = (viewDef_t){.time = 100, .lerpfrac = 0.4f}; MDLX_TestResetPoseCache();
+    MDLX_TestSequenceLookups = MDLX_TestTrackBounds = 0;
+    MDLX_BindBoneMatrices(&model, &matrix, 200, 100);
+    T_FEQ(node_matrices[0].v[12], 3.5f, 0.001f); T_FEQ(node_matrices[3].v[12], 3.5f, 0.001f);
+    T_ASSERT(MDLX_TestSequenceLookups <= 2); T_ASSERT(MDLX_TestTrackBounds <= 8);
+    tr.viewDef.time++;
+    MDLX_BindBoneMatrices(&model, &matrix, 700, 100);
+    T_FEQ(node_matrices[0].v[12], 10.833333f, 0.001f);
+    /* The stack scope must end before a later public query, even with the same pointers and frames. */
+    vec3_t untouched = {99, 98, 97}; seqs[0].interval[0] = 1000;
+    MDLX_GetModelKeytrackValue(&model, track, 100, &untouched);
+    T_FEQ(untouched.x, 99, 0.001f);
+    MDLX_TestResetPoseCache(); tr.viewDef = saved;
+}
+
+/* Interior poses need only their time bracket; unrelated sequence keys must not add two range searches. */
+TEST(renderer_model, mdx_pose_sampling_resolves_interior_brackets_without_sequence_range_searches) {
+    extern _Atomic uint32_t MDLX_TestTrackBounds;
+    uint32_t storage[3][sizeof(mdxKeyTrack_t) / 4 + 32 * 4] = {0};
+    mdxNode_t nodes[3] = {0};
+    mdxSequence_t seq = {.interval = {100, 2100}};
+    mdxModel_t model = {.sequences = &seq, .num_sequences = 1, .num_nodes = 3};
+    FOR_LOOP(n, 3) {
+        mdxKeyTrack_t *track = (mdxKeyTrack_t *)storage[n];
+        *track = (mdxKeyTrack_t){.keyframeCount = 32, .datatype = TDATA_FLOAT3,
+            .linetype = TRACK_LINEAR, .globalSeqId = (uint32_t)-1};
+        FOR_LOOP(i, 32) {
+            mdxKeyFrame_t *key = (mdxKeyFrame_t *)((char *)track->values + i * 16);
+            key->time = i * 100; vec3_t v = {100 * n + i, 0, 0}; memcpy(key->data, &v, sizeof(v));
+        }
+        nodes[n] = (mdxNode_t){.node_id = n * 3, .parent_id = (uint32_t)-1, .translation = track};
+        model.node_list[n] = &nodes[n]; model.nodes[n * 3] = &nodes[n];
+    }
+    viewDef_t saved = tr.viewDef; mat4_t matrix; Matrix4_identity(&matrix);
+    tr.viewDef = (viewDef_t){.time = 100, .lerpfrac = 0.37f}; MDLX_TestResetPoseCache();
+    MDLX_TestTrackBounds = 0;
+    MDLX_BindBoneMatrices(&model, &matrix, 475, 425);
+    FOR_LOOP(n, 3) T_FEQ(node_matrices[n * 3].v[12], 100 * n + 4.435f, 0.0001f);
+    T_ASSERT(MDLX_TestTrackBounds <= 6);
+    tr.viewDef.time++; MDLX_TestTrackBounds = 0;
+    MDLX_BindBoneMatrices(&model, &matrix, 500, 400);
+    FOR_LOOP(n, 3) T_FEQ(node_matrices[n * 3].v[12], 100 * n + 4.37f, 0.0001f);
+    T_ASSERT(MDLX_TestTrackBounds <= 6);
+    MDLX_TestResetPoseCache(); tr.viewDef = saved;
+}
+
+/* Single-key tracks are constant only inside their own sequence; no binary search is needed. */
+TEST(renderer_model, mdx_single_key_sampling_preserves_missing_sequences_and_global_contracts_without_searches) {
+    extern _Atomic uint32_t MDLX_TestTrackBounds;
+    uint32_t storage[sizeof(mdxKeyTrack_t) / 4 + 6] = {0};
+    mdxKeyTrack_t *track = (mdxKeyTrack_t *)storage;
+    *track = (mdxKeyTrack_t){.keyframeCount = 1, .datatype = TDATA_FLOAT1,
+        .linetype = TRACK_LINEAR, .globalSeqId = (uint32_t)-1};
+    mdxKeyFrame_t *key = track->values; key->time = 150; float authored = 0.73f;
+    memcpy(key->data, &authored, sizeof(authored));
+    mdxSequence_t seqs[] = {{.interval = {100, 350}}, {.interval = {400, 600}}};
+    mdxGlobalSequence_t global = {.value = 350};
+    mdxModel_t model = {.sequences = seqs, .num_sequences = 2, .globalSequences = &global, .num_globalSequences = 1};
+    viewDef_t saved = tr.viewDef; tr.viewDef.time = 225;
+    MDLX_TestTrackBounds = 0;
+    float value = 99;
+    MDLX_GetModelKeytrackValue(&model, track, 110, &value); T_FEQ(value, authored, 0.00001f);
+    value = 99; MDLX_GetModelKeytrackValue(&model, track, 150, &value); T_FEQ(value, authored, 0.00001f);
+    value = 99; MDLX_GetModelKeytrackValue(&model, track, 349, &value); T_FEQ(value, authored, 0.00001f);
+    value = 99; MDLX_GetModelKeytrackValue(&model, track, 450, &value); T_FEQ(value, 99, 0.00001f);
+    value = 99; MDLX_GetModelKeytrackValue(&model, track, 350, &value); T_FEQ(value, 99, 0.00001f);
+    key->time = 350; value = 99;
+    MDLX_GetModelKeytrackValue(&model, track, 349, &value); T_FEQ(value, authored, 0.00001f);
+    track->globalSeqId = 0; value = 99;
+    MDLX_GetModelKeytrackValue(&model, track, 9999, &value); T_FEQ(value, authored, 0.00001f);
+    global.value = 0; value = 99; /* First global key beyond its duration remains the authored constant. */
+    MDLX_GetModelKeytrackValue(&model, track, 9999, &value); T_FEQ(value, authored, 0.00001f);
+    track->globalSeqId = 1; value = 99;
+    MDLX_GetModelKeytrackValue(&model, track, 9999, &value); T_FEQ(value, 99, 0.00001f);
+    T_EQ(MDLX_TestTrackBounds, 0);
+    track->keyframeCount = 3; track->globalSeqId = (uint32_t)-1;
+    FOR_LOOP(i, 3) {
+        mdxKeyFrame_t *entry = (mdxKeyFrame_t *)((char *)track->values + i * 8);
+        entry->time = 150 + 250 * i; float v = 0.2f + 0.1f * i; memcpy(entry->data, &v, sizeof(v));
+    }
+    FOR_LOOP(i, 2) {
+        MDLX_TestTrackBounds = 0; value = 99;
+        MDLX_GetModelKeytrackValue(&model, track, i ? 500 : 400, &value);
+        T_FEQ(value, 0.3f, 0.00001f); T_ASSERT(MDLX_TestTrackBounds <= 1);
+    }
+    tr.viewDef = saved;
+}
+
+/* Duplicate endpoint keys retain the existing last-key tail behavior. */
+TEST(renderer_model, mdx_neighbor_sampling_keeps_duplicate_endpoints_sequence_gaps_and_wrap) {
+    uint32_t storage[sizeof(mdxKeyTrack_t) / 4 + 7 * 2] = {0};
+    mdxKeyTrack_t *track = (mdxKeyTrack_t *)storage;
+    *track = (mdxKeyTrack_t){.keyframeCount = 7, .datatype = TDATA_FLOAT1,
+        .linetype = TRACK_LINEAR, .globalSeqId = (uint32_t)-1};
+    int times[] = {50, 150, 250, 300, 300, 400, 450};
+    float values[] = {99, 10, 20, 30, 40, 90, 100};
+    FOR_LOOP(i, 7) {
+        mdxKeyFrame_t *key = (mdxKeyFrame_t *)((char *)track->values + i * 8);
+        key->time = times[i]; memcpy(key->data, &values[i], 4);
+    }
+    mdxSequence_t seqs[] = {{.interval = {100, 350}}, {.interval = {360, 390}}};
+    mdxModel_t model = {.sequences = seqs, .num_sequences = 2};
+    uint32_t samples[] = {100, 175, 250, 275, 300, 325, 349, 370};
+    float expected[] = {10, 12.5f, 20, 25, 40, 32.5f, 25.3f, 777};
+    FOR_LOOP(i, 8) {
+        float value = 777; MDLX_GetModelKeytrackValue(&model, track, samples[i], &value);
+        T_FEQ(value, expected[i], 0.0001f);
+    }
+    extern _Atomic uint32_t MDLX_TestTrackBounds;
+    MDLX_TestTrackBounds = 0; float value = 777;
+    MDLX_GetModelKeytrackValue(&model, track, 370, &value);
+    T_FEQ(value, 777, 0.0001f); T_ASSERT(MDLX_TestTrackBounds <= 1);
+    track->keyframeCount = 2; track->values->time = 450;
+    ((mdxKeyFrame_t *)((char *)track->values + 8))->time = 650; /* All keys after this sequence. */
+    MDLX_TestTrackBounds = 0; value = 777;
+    MDLX_GetModelKeytrackValue(&model, track, 370, &value);
+    T_FEQ(value, 777, 0.0001f); T_ASSERT(MDLX_TestTrackBounds <= 1);
+    seqs[1].interval[0] = 700; seqs[1].interval[1] = 900; /* All keys before this sequence. */
+    MDLX_TestTrackBounds = 0; value = 777;
+    MDLX_GetModelKeytrackValue(&model, track, 750, &value);
+    T_FEQ(value, 777, 0.0001f); T_ASSERT(MDLX_TestTrackBounds <= 1);
+}
+
+/* Optional CPU-only benchmark: unique full-precision poses, three real tracks per bone and a parent chain. */
+TEST(stress_mdx_pose, sampled_bones) {
+    uint32_t storage[32][3][sizeof(mdxKeyTrack_t) / 4 + 32 * 5] = {0};
+    mdxNode_t nodes[32] = {0};
+    mdxSequence_t seqs[] = {{.interval = {0, 1600}}, {.interval = {1600, 3200}}};
+    mdxGlobalSequence_t global = {.value = 1000};
+    mdxModel_t model = {.sequences = seqs, .num_sequences = 2, .num_nodes = 32,
+        .globalSequences = &global, .num_globalSequences = 1};
+    FOR_LOOP(n, 32) {
+        mdxKeyTrack_t *tracks[3];
+        FOR_LOOP(t, 3) {
+            mdxKeyTrack_t *track = tracks[t] = (mdxKeyTrack_t *)storage[n][t];
+            *track = (mdxKeyTrack_t){.keyframeCount = n % 5 ? 32 : 1,
+                .datatype = t == 1 ? TDATA_FLOAT4 : TDATA_FLOAT3,
+                .linetype = TRACK_LINEAR, .globalSeqId = n % 11 ? (uint32_t)-1 : 0};
+            uint32_t stride = 4 + (t == 1 ? 16 : 12);
+            FOR_LOOP(i, track->keyframeCount) {
+                mdxKeyFrame_t *key = (mdxKeyFrame_t *)((char *)track->values + i * stride);
+                float value[4] = {0, 0, 0, 1}; key->time = i * 100;
+                if (t == 0) { value[0] = i * 0.01f; value[1] = n * 0.03f; }
+                else if (t == 1) { value[2] = sinf(i * 0.01f); value[3] = cosf(i * 0.01f); }
+                else value[0] = value[1] = value[2] = 1 + i * 0.001f;
+                memcpy(key->data, value, stride - 4);
+            }
+        }
+        nodes[n] = (mdxNode_t){.node_id = n * 3, .parent_id = n ? (n - 1) * 3 : (uint32_t)-1,
+            .translation = tracks[0], .rotation = tracks[1], .scale = tracks[2]};
+        model.nodes[n * 3] = model.node_list[n] = &nodes[n];
+    }
+    viewDef_t saved = tr.viewDef; mat4_t matrix; Matrix4_identity(&matrix);
+    tr.viewDef = (viewDef_t){.time = 100, .lerpfrac = 0.37f}; MDLX_TestResetPoseCache();
+    T_BENCH("200 poses, 32 bones, T/R/S tracks, CPU", 100, {
+        tr.viewDef.time++;
+        FOR_LOOP(i, 200) {
+            uint32_t oldframe = (i * 37 + _bi * 13) % 1400 + 50;
+            MDLX_BindBoneMatrices(&model, &matrix, oldframe + 50, oldframe);
+        }
+    });
+    T_EQ(MDLX_TestPoseEvaluations, 20000);
+    T_ASSERT(isfinite(node_matrices[93].v[12]));
+    MDLX_TestResetPoseCache(); tr.viewDef = saved;
 }
 
 TEST(renderer_model, mdx_keytrack_lookup_uses_hermite_stride) {
@@ -1154,9 +1632,9 @@ TEST(renderer_model, mdx_cave_uv_channels_do_not_overwrite_the_cliff_coordinates
     T_FEQ(uv_upload.data[0].x, 0.7f, 0.001f); T_EQ(uv_upload.stride, sizeof(vec2_t));
     T_EQ(uv_upload.offset, 0);
     geo->vaos[0] = 37; geo->vaos[1] = 41;
-    T_EQ(MDX_GeosetArray(geo, 0), 37); T_EQ(MDX_GeosetArray(geo, 1), 41);
-    T_EQ(MDX_GeosetArray(geo, -1), 37); T_EQ(MDX_GeosetArray(geo, 2), 0);
-    T_EQ(MDX_GeosetArray(geo, -2), 0);
+    T_EQ(MDX_GeosetArray(geo, 0, false), 37); T_EQ(MDX_GeosetArray(geo, 1, false), 41);
+    T_EQ(MDX_GeosetArray(geo, -1, false), 37); T_EQ(MDX_GeosetArray(geo, 2, false), 0);
+    T_EQ(MDX_GeosetArray(geo, -2, false), 0);
     uv_upload.active = false;
     MDLX_Release(&model);
     /* A missing declared channel is rejected before geometry upload, rather than filling it with UV0. */
@@ -1174,6 +1652,61 @@ TEST(renderer_model, mdx_cave_uv_channels_do_not_overwrite_the_cliff_coordinates
     MDX_BuildBuffers(&model);
     T_EQ(ARRAY_COUNT(geo->vaos), 1); T_EQ(model.buffers[BZ_MDX_UV_BUFFER], 0);
     MDLX_Release(&model);
+}
+
+/* Real model upload must prepare both UV families with identical geometry and independent instance divisors. */
+TEST(renderer_model, mdx_cached_vertex_arrays_own_stream_uv_indices_and_release_before_buffers) {
+    reset_registry();
+    vec3_t vertices[3] = {{0,0,0}, {1,0,0}, {0,1,0}}, normals[3] = {{0,0,1}, {0,0,1}, {0,0,1}};
+    vec2_t uv[6] = {{0,0}, {1,0}, {0,1}, {.1f,.2f}, {.3f,.4f}, {.5f,.6f}};
+    short triangles[] = {0,1,2};
+    mdxGeoset_t second = {.num_vertices = 3, .num_triangles = 3, .num_texcoord = 3, .num_texcoordChannels = 1,
+        .vertices = vertices, .normals = normals, .texcoord = uv, .triangles = triangles};
+    mdxGeoset_t first = second; first.num_texcoordChannels = 2; first.next = &second;
+    mdxModel_t model = {.geosets = &first};
+    uint32_t attrs[] = {attrib_position, attrib_texcoord, attrib_normal, attrib_color, attrib_skin1, attrib_boneWeight1};
+    FOR_LOOP(pass, 2) {
+        mdx_gpu = (typeof(mdx_gpu)){.active = true}; /* Reuse the same driver IDs after complete release. */
+        MDX_BuildBuffers(&model);
+        T_EQ(model.buffers[BZ_MDX_INSTANCE_BUFFER], 0); T_NULL(first.inst_vaos); T_NULL(second.inst_vaos);
+        MDX_PrepareModelInstances(&model);
+        uint32_t created = mdx_gpu.next; MDX_PrepareModelInstances(&model); T_EQ(mdx_gpu.next, created);
+        T_ASSERT(model.buffers[BZ_MDX_INSTANCE_BUFFER]);
+        T_EQ(mdx_gpu.sizes[model.buffers[BZ_MDX_INSTANCE_BUFFER]], 0);
+        T_EQ(mdx_gpu.sizes[model.buffers[BZ_MDX_INDEX_BUFFER]], 6 * sizeof(uint16_t));
+        uint32_t base = 0;
+        FOR_EACH_LIST(mdxGeoset_t, geo, model.geosets) {
+            T_EQ(ARRAY_COUNT(geo->inst_vaos), ARRAY_COUNT(geo->vaos));
+            FOR_LOOP(channel, ARRAY_COUNT(geo->vaos)) {
+                uint32_t ordinary = MDX_GeosetArray(geo, channel, false), cached = MDX_GeosetArray(geo, channel, true);
+                T_NE(ordinary, cached); T_EQ(mdx_gpu.vaos[ordinary].element, model.buffers[BZ_MDX_INDEX_BUFFER]);
+                T_EQ(mdx_gpu.vaos[cached].element, model.buffers[BZ_MDX_INDEX_BUFFER]);
+                FOR_LOOP(i, 6) {
+                    T_EQ(memcmp(&mdx_gpu.vaos[ordinary].attr[attrs[i]], &mdx_gpu.vaos[cached].attr[attrs[i]], sizeof(mdx_gpu.vaos[0].attr[0])), 0);
+                    T_ASSERT(mdx_gpu.vaos[cached].attr[attrs[i]].enabled);
+                    T_EQ(mdx_gpu.vaos[cached].attr[attrs[i]].divisor, 0);
+                }
+                T_EQ(mdx_gpu.vaos[cached].attr[attrib_position].offset, base * sizeof(vertex_t) + offsetof(vertex_t, position));
+                T_EQ(mdx_gpu.vaos[cached].attr[attrib_texcoord].buffer, model.buffers[channel ? BZ_MDX_UV_BUFFER : BZ_MDX_VERTEX_BUFFER]);
+                FOR_LOOP(i, 4) {
+                    typeof(mdx_gpu.vaos[0].attr[0]) *a = &mdx_gpu.vaos[cached].attr[attrib_instance + i];
+                    T_ASSERT(a->enabled); T_EQ(a->divisor, 1); T_EQ(a->buffer, model.buffers[BZ_MDX_INSTANCE_BUFFER]);
+                    T_EQ(a->stride, sizeof(mat4_t)); T_EQ(a->offset, i * 4 * sizeof(float));
+                    T_ASSERT(!mdx_gpu.vaos[ordinary].attr[attrib_instance + i].enabled);
+                    T_EQ(mdx_gpu.vaos[ordinary].attr[attrib_instance + i].divisor, 0);
+                }
+            }
+            T_EQ(MDX_GeosetArray(geo, -1, true), geo->inst_vaos[0]);
+            T_EQ(MDX_GeosetArray(geo, -2, true), 0);
+            T_EQ(MDX_GeosetArray(geo, ARRAY_COUNT(geo->inst_vaos), true), 0);
+            base += geo->num_vertices;
+        }
+        MDX_ReleaseBuffers(&model);
+        FOR_LOOP(i, 128) { T_ASSERT(!mdx_gpu.arrays[i]); T_ASSERT(!mdx_gpu.buffers[i]); }
+        T_NULL(first.vaos); T_NULL(first.inst_vaos); T_NULL(second.vaos); T_NULL(second.inst_vaos);
+        FOR_LOOP(i, BZ_MDX_BUFFER_COUNT) T_EQ(model.buffers[i], 0);
+    }
+    mdx_gpu.active = false;
 }
 
 TEST(renderer_model, mdx_ribb_loader_reads_emitter_tracks_and_nodes) {
@@ -1385,7 +1918,7 @@ TEST(renderer_model, mdx_parented_eye_and_pendant_billboards_face_camera_without
         }
     }
     /* The unflagged sibling still follows parent animation rather than facing the camera. */
-    eyes.flags = 0;
+    eyes.flags = 0; MDLX_TestResetPoseCache(); /* The fixture mutated immutable model metadata. */
     MDLX_BindBoneMatrices(&model, &entity, 500, 500);
     FOR_LOOP(i, 16) T_FEQ(node_matrices[1].v[i], node_matrices[0].v[i], 0.001f);
     tr.viewDef = saved;
@@ -1446,6 +1979,101 @@ TEST(renderer_model, mdx_attachment_positions_follow_authored_pivot_and_model_tr
     T_FEQ(positions[0].origin.z, 36.0f, 0.001f);
 }
 
+/* Empty attachment queries must not evaluate a skeleton whose matrices are never consumed. */
+TEST(renderer_model, mdx_attachment_query_binds_pose_only_for_a_visible_match) {
+    uint8_t storage[sizeof(mdxKeyTrack_t) + sizeof(int) + sizeof(float)] = {0};
+    mdxKeyTrack_t *hidden = (mdxKeyTrack_t *)storage;
+    mdxKeyFrame_t *key = (mdxKeyFrame_t *)hidden->values;
+    mdxSequence_t seq = { .interval = {0, 1000} };
+    mdxNode_t bone = { .node_id = 0, .parent_id = (uint32_t)-1 };
+    mdxAttachment_t socket = { .node = { .name = "Sprite First Ref", .node_id = 1, .parent_id = 0 } };
+    vec3_t pivots[] = {{0}, {4, 5, 6}};
+    mdxModel_t model = { .num_nodes = 2, .node_list = {&bone, &socket.node},
+        .pivots = pivots, .num_pivots = 2, .sequences = &seq, .num_sequences = 1 };
+    mdxAttachmentPosition_t output = { .origin = {918, 0, 0} };
+    mat4_t matrix, saved[2] = {node_matrices[0], node_matrices[1]};
+    model.nodes[0] = &bone; model.nodes[1] = &socket.node;
+    hidden->keyframeCount = 1; hidden->datatype = TDATA_FLOAT1;
+    hidden->linetype = TRACK_NO_INTERP; hidden->globalSeqId = (uint32_t)-1;
+    key->time = 0; *(float *)key->data = 0;
+    Matrix4_identity(&matrix); Matrix4_translate(&matrix, &(vec3_t){10, 20, 30});
+
+    Matrix4_identity(&node_matrices[0]); node_matrices[0].v[12] = 777;
+    T_EQ(MDLX_CollectAttachmentPositions(&model, &matrix, 0, 0, NULL, &output, 1), 0);
+    T_FEQ(node_matrices[0].v[12], 777, 0.001f); T_FEQ(output.origin.x, 918, 0.001f);
+    model.attachments = &socket;
+    node_matrices[0].v[12] = 777;
+    T_EQ(MDLX_CollectAttachmentPositions(&model, &matrix, 0, 0, "Origin ", &output, 1), 0);
+    T_FEQ(node_matrices[0].v[12], 777, 0.001f);
+    socket.Visibility = hidden; node_matrices[0].v[12] = 777;
+    T_EQ(MDLX_CollectAttachmentPositions(&model, &matrix, 0, 0, "Sprite ", &output, 1), 0);
+    T_FEQ(node_matrices[0].v[12], 777, 0.001f);
+
+    socket.Visibility = NULL;
+    T_EQ(MDLX_CollectAttachmentPositions(&model, &matrix, 0, 0, "sprite ", &output, 1), 1);
+    T_FEQ(node_matrices[0].v[12], 0, 0.001f);
+    T_FEQ(output.origin.x, 14, 0.001f); T_FEQ(output.origin.y, 25, 0.001f); T_FEQ(output.origin.z, 36, 0.001f);
+    T_STREQ(output.name, "Sprite First Ref"); T_STREQ(output.path, "");
+    node_matrices[0] = saved[0]; node_matrices[1] = saved[1];
+}
+
+
+TEST(renderer_model, mdx_socket_query_evaluates_only_returned_nodes_and_their_ancestors) {
+    extern _Atomic uint32_t MDLX_TestNodeEvaluations;
+    extern void MDLX_TestResetPoseCache(void);
+    mdxNode_t root = {.node_id = 0, .parent_id = (uint32_t)-1};
+    mdxNode_t unused = {.node_id = 7, .parent_id = 0};
+    mdxAttachment_t socket = {.node = {.node_id = 3, .parent_id = 0, .name = "Sprite First Ref"}};
+    mdxAttachment_t other = {.node = {.node_id = 9, .parent_id = 7, .name = "Origin Ref"}};
+    mdxModel_t model = {.num_nodes = 4, .node_list = {&unused, &other.node, &socket.node, &root}, .attachments = &other};
+    mdxAttachmentPosition_t out[2]; mat4_t matrix;
+    other.next = &socket;
+    model.nodes[0] = &root; model.nodes[3] = &socket.node; model.nodes[7] = &unused; model.nodes[9] = &other.node;
+    Matrix4_identity(&matrix); matrix.v[12] = 17;
+    MDLX_TestResetPoseCache();
+    T_EQ(MDLX_CollectAttachmentPositions(&model, &matrix, 0, 0, "Sprite ", out, 2), 1);
+    T_EQ(MDLX_TestNodeEvaluations, 2);
+    T_STREQ(out[0].name, "Sprite First Ref"); T_STREQ(out[0].path, "");
+    T_FEQ(out[0].origin.x, 17, 0.001f); T_FEQ(out[0].transform.v[12], 17, 0.001f);
+    MDLX_TestResetPoseCache();
+    T_EQ(MDLX_CollectAttachmentPositions(&model, &matrix, 0, 0, NULL, out, 1), 1);
+    T_EQ(MDLX_TestNodeEvaluations, 3); T_STREQ(out[0].name, "Origin Ref");
+    MDLX_TestResetPoseCache();
+    T_EQ(MDLX_CollectAttachmentPositions(&model, &matrix, 0, 0, NULL, out, 2), 2);
+    T_EQ(MDLX_TestNodeEvaluations, 4);
+    /* Embedded children must not spend output capacity or pose work on empty effect sockets. */
+    snprintf(socket.path, sizeof(socket.path), "Objects\\Spawnmodels\\Child.mdx");
+    MDLX_TestResetPoseCache();
+    T_EQ(MDLX_CollectAttachmentModels(&model, &matrix, 0, 0, out, 1), 1);
+    T_EQ(MDLX_TestNodeEvaluations, 2); T_STREQ(out[0].name, "Sprite First Ref");
+    T_STREQ(out[0].path, "Objects\\Spawnmodels\\Child.mdx");
+    MDLX_TestResetPoseCache(); socket.path[0] = 0;
+    T_EQ(MDLX_CollectAttachmentModels(&model, &matrix, 0, 0, out, 2), 0);
+    T_EQ(MDLX_TestNodeEvaluations, 0);
+    other.node.node_id = MDX_MAX_NODES;
+    T_EQ(MDLX_CollectAttachmentPositions(&model, &matrix, 0, 0, "Origin ", out, 1), 1);
+    T_FEQ(out[0].origin.x, 17, 0.001f); T_FEQ(out[0].transform.v[12], 17, 0.001f);
+}
+
+TEST(renderer_model, mdx_socket_query_never_truncates_a_large_authored_attachment_list) {
+    uint32_t const count = MDX_MAX_NODES + 1;
+    mdxAttachment_t *attachments = test_alloc(count * sizeof(*attachments));
+    mdxAttachmentPosition_t *out = test_alloc(count * sizeof(*out));
+    FOR_LOOP(i, count) {
+        attachments[i].next = i + 1 < count ? &attachments[i + 1] : NULL;
+        attachments[i].node.parent_id = (uint32_t)-1;
+        snprintf(attachments[i].path, sizeof(attachments[i].path), "Objects\\Child%u.mdx", i);
+    }
+    /* Authored attachment records can share a node ID; node storage is not an output-count limit. */
+    mdxModel_t model = {.num_nodes = 1, .nodes = {&attachments[0].node},
+        .node_list = {&attachments[0].node}, .attachments = attachments};
+    mat4_t matrix; Matrix4_identity(&matrix); matrix.v[12] = 17;
+    MDLX_TestResetPoseCache();
+    T_EQ(MDLX_CollectAttachmentPositions(&model, &matrix, 0, 0, NULL, out, count), count);
+    T_STREQ(out[count - 1].path, "Objects\\Child1024.mdx");
+    T_FEQ(out[count - 1].origin.x, 17, 0.001f);
+    MDLX_TestResetPoseCache(); test_free(out); test_free(attachments);
+}
 
 TEST(renderer_model, mdx_geometry_packs_two_geosets_into_model_ranges) {
     vec3_t pos[] = {{1,2,3}, {4,5,6}, {7,8,9}}, normals[] = {{0,0,1}, {0,1,0}, {1,0,0}};
@@ -1595,7 +2223,8 @@ TEST(renderer_model, unknown_model_release_is_immediate) {
 }
 
 TEST(renderer_texture, cached_registration_preserves_newer_texture_indices) {
-    texture_t first = { .texid = 100 }, second = { .texid = 101 };
+    /* Registered textures outlive this test; the registry retains these pointers. */
+    static texture_t first = { .texid = 100 }, second = { .texid = 101 };
 
     texture_load_result = &first; T_EQ(R_RegisterTextureFile("first"), 100);
     texture_load_result = &second; T_EQ(R_RegisterTextureFile("second"), 101);
@@ -1860,6 +2489,20 @@ TEST(renderer_bones, instanced_shader_uses_the_same_palette_contract) {
     T_NOT_NULL(strstr(shader_src, "int boneIdx = int(a_skin1[i]) + int(u_firstBoneLookupIndex);"));
 }
 
+TEST(renderer_shader, model_variants_share_affine_projection_order) {
+    FOR_LOOP(i, 2) {
+        test_shader_source(1, &sd_model, true, i ? "#define BZ_USE_INSTANCING 1\n" : NULL);
+        T_NOT_NULL(strstr(shader_src, "vec4 worldPos4 = a_instance * position;"));
+        T_NOT_NULL(strstr(shader_src, "vec4 worldPos4 = u_model * position;"));
+        T_NULL(strstr(shader_src, "u_viewProjection * u_model * position"));
+        T_NULL(strstr(shader_src, "u_lightMatrix * u_model * position"));
+        T_NULL(strstr(shader_src, "u_textureMatrix * u_model * position"));
+        char const *project = strstr(shader_src, "return u_viewProjection * worldPos4;");
+        T_NOT_NULL(project);
+        if (project) T_NULL(strstr(project + 1, "return u_viewProjection * worldPos4;"));
+    }
+}
+
 TEST(renderer_shader, normal_model_defines_do_not_inherit_instancing) {
     T_NOT_NULL(strstr(R_ShaderDefines(true), "#define BZ_USE_INSTANCING 1\n"));
     T_NULL(strstr(R_ShaderDefines(false), "BZ_USE_INSTANCING"));
@@ -1948,6 +2591,7 @@ static handle_t shader_alloc(long size) { return shader_test.memory = test_alloc
 static void reset_shader(void) {
     ri.MemAlloc = shader_alloc; ri.MemFree = test_free;
     R_ShutdownModelShader();
+    R_ResetShaderBinding(true);
     memset(&shader_test, 0, sizeof(shader_test));
     shader_test.logsize = 64;
 }
@@ -2307,15 +2951,39 @@ static void test_splat_disable(GLenum cap) { if (cap == GL_POLYGON_OFFSET_FILL) 
 static void test_splat_polygon_offset(GLfloat factor, GLfloat units) {
     splat_bias.offsets++; splat_bias.factor = factor; splat_bias.units = units;
 }
+static void test_splat_blend(GLenum src, GLenum dst) { (void)src; (void)dst; }
+static void test_splat_depth(GLboolean enabled) { (void)enabled; }
+static void test_splat_texture(texture_t const *texture, uint32_t unit) { (void)texture; (void)unit; }
+static void test_splat_wrap(texture_t const *texture, bool s, bool t) { (void)texture; (void)s; (void)t; }
+static void test_splat_upload(GLenum target, GLsizeiptr size, void const *data, GLenum usage) {
+    (void)target; (void)usage;
+    if (!splat_capture.active) return;
+    uint32_t count = (uint32_t)(size / sizeof(vertex_t));
+    if (splat_capture.count + count <= sizeof(splat_capture.vertices) / sizeof(vertex_t))
+        memcpy(splat_capture.vertices + splat_capture.count, data, size);
+    splat_capture.uploads++; splat_capture.count += count;
+}
 #define glEnable test_splat_enable
 #define glDisable test_splat_disable
 #define glPolygonOffset test_splat_polygon_offset
+#define glBlendFunc test_splat_blend
+#define glDepthMask test_splat_depth
+#define glBindVertexArray test_bindva
+#define glBindBuffer test_bindbuf
+#define glBufferData test_splat_upload
+#define glDrawArrays test_drawarrays
+#define R_BindTexture test_splat_texture
+#define R_SetTextureWrap test_splat_wrap
+#pragma push_macro("R_ApplyShader")
+#undef R_ApplyShader
+#define R_ApplyShader(shader) ((void)(shader))
 static struct { uint32_t calls, first, count; float z; } ground_update;
 static void test_ground_update(buffer_t const *buffer, uint32_t first, vertex_t const *vertices, uint32_t count) {
     (void)buffer;
     ground_update.calls++; ground_update.first = first; ground_update.count = count;
     ground_update.z = vertices[0].position.z;
 }
+void R_TestProductionRenderRectSplatUV(rectSplatParams_t const *params);
 #define R_RenderRectSplatUV R_TestProductionRenderRectSplatUV
 #define R_RenderFlatRectSplat R_TestProductionRenderFlatRectSplat
 #define R_RenderSplat R_TestProductionRenderSplat
@@ -2327,6 +2995,16 @@ static void test_ground_update(buffer_t const *buffer, uint32_t first, vertex_t 
 #undef glEnable
 #undef glDisable
 #undef glPolygonOffset
+#undef glBlendFunc
+#undef glDepthMask
+#undef glBindVertexArray
+#undef glBindBuffer
+#undef glBufferData
+#undef glDrawArrays
+#undef R_BindTexture
+#undef R_SetTextureWrap
+#undef R_ApplyShader
+#pragma pop_macro("R_ApplyShader")
 #undef R_RenderRectSplatUV
 #undef R_RenderFlatRectSplat
 #undef R_RenderSplat
@@ -2544,6 +3222,148 @@ TEST(renderer_terrain, splat_draw_biases_coplanar_terrain_geometry) {
     R_SetSplatDepthBias(false);
     T_EQ(splat_bias.disables, 1); T_EQ(splat_bias.offsets, 2);
     T_FEQ(splat_bias.factor, 0.0f, 0.0f); T_FEQ(splat_bias.units, 0.0f, 0.0f);
+}
+
+/* Run the real event dispatcher and terrain clipper while recording only its GL boundary. */
+uint32_t R_TestCaptureSplatPass(void (*draw)(void)) {
+    war3mapVertex_t verts[4] = {0};
+    war3map_t map = { .width = 2, .height = 2, .vertices = verts };
+    war3map_t const *saved = tr.world;
+    buffer_t buffer = {0}, *saved_buffer = tr.buffer[RBUF_TEMP1];
+    FOR_LOOP(i, 4) verts[i].accurate_height = 8192;
+    tr.world = &map; tr.buffer[RBUF_TEMP1] = &buffer;
+    memset(&splat_capture, 0, sizeof(splat_capture)); splat_capture.active = true;
+    memset(&draw_test, 0, sizeof(draw_test));
+    draw();
+    splat_capture.active = false; tr.world = saved; tr.buffer[RBUF_TEMP1] = saved_buffer;
+    T_EQ(draw_test.calls, splat_capture.uploads);
+    return draw_test.calls;
+}
+
+bool R_TestCapturingSplats(void) { return splat_capture.active; }
+
+/* Distinct atlas cells/colors expose lost data; texture/shader runs expose illegal reordering. */
+static void test_splat_rects(bool batch, bool alternate, bool shaders) {
+    texture_t textures[2] = { { .texid = 1 }, { .texid = 2 } };
+    vec2_t mins = {24, 20}, maxs = {108, 112};
+    if (batch) R_BeginSplatBatch(R_SPLAT_SHADER(&tr.shader_default));
+    FOR_LOOP(i, 4) {
+        vec2_t uv_mins = { i * 0.125f, 0.25f }, uv_maxs = { (i + 1) * 0.125f, 0.75f };
+        R_TestProductionRenderRectSplatUV(&MAKE(rectSplatParams_t, .mins = &mins, .maxs = &maxs,
+            .uv_mins = &uv_mins, .uv_maxs = &uv_maxs, .texture = textures + (shaders ? 0 : alternate ? i % 2 : i / 2),
+            .shader = shaders && i >= 2 ? R_SPLAT_SHADER(&tr.shader_shadowSplat) : R_SPLAT_SHADER(&tr.shader_default),
+            .color = MAKE(color32_t, i * 30, 80, 90, 100)));
+    }
+    if (batch) R_EndSplatBatch();
+}
+static void test_splats_immediate(void) { test_splat_rects(false, false, false); }
+static void test_splats_batched(void) { test_splat_rects(true, false, false); }
+static void test_splats_alternating(void) { test_splat_rects(true, true, false); }
+static void test_splats_shaders(void) { test_splat_rects(true, false, true); }
+
+static bool splat_cache_on;
+static cstring_t test_splat_cache_cvar(cstring_t name, cstring_t fallback) {
+    return !strcmp(name, "r_splat_cache") ? (splat_cache_on ? "1" : "0") : fallback;
+}
+static void test_splats_repeated(void) {
+    texture_t texture = {0};
+    vec2_t mins = {24, 20}, maxs = {108, 112};
+    R_BeginSplatBatch(R_SPLAT_SHADER(&tr.shader_default));
+    FOR_LOOP(i, 4) {
+        vec2_t uv0 = { i * 0.125f, 0.25f }, uv1 = { (i + 1) * 0.125f, 0.5f };
+        R_TestProductionRenderRectSplatUV(&MAKE(rectSplatParams_t, .mins = &mins, .maxs = &maxs,
+            .uv_mins = &uv0, .uv_maxs = &uv1, .texture = &texture,
+            .shader = R_SPLAT_SHADER(&tr.shader_default), .color = MAKE(color32_t, 32 + i, 67, 145, 83 + i)));
+    }
+    R_EndSplatBatch();
+}
+
+/* Cache reuse must retain exact triangle positions and changing atlas/tint data at the GL boundary. */
+TEST(renderer_terrain, splat_cache_reuses_clipping_without_changing_uploaded_vertices) {
+    cstring_t (*old)(cstring_t, cstring_t) = ri.CvarString;
+    vertex_t expected[128];
+    ri.CvarString = test_splat_cache_cvar; R_ResetGroundTextures(); splat_cache_on = false;
+    test_splat_tile_builds = 0;
+    T_EQ(R_TestCaptureSplatPass(test_splats_repeated), 1);
+    uint32_t count = splat_capture.count; T_ASSERT(count <= 128);
+    memcpy(expected, splat_capture.vertices, count * sizeof(*expected));
+    T_EQ(test_splat_tile_builds, 4);
+    splat_cache_on = true; test_splat_tile_builds = 0;
+    T_EQ(R_TestCaptureSplatPass(test_splats_repeated), 1);
+    T_EQ(test_splat_tile_builds, 1); T_EQ(splat_capture.count, count);
+    T_EQ(memcmp(expected, splat_capture.vertices, count * sizeof(*expected)), 0);
+    /* The real deformation rebuild hook and map reset must both discard old geometry. */
+    war3map_t map = { .width = 2, .height = 2 };
+    R_UpdateGroundSegment(&map, 0, 0);
+    test_splat_tile_builds = 0; T_EQ(R_TestCaptureSplatPass(test_splats_repeated), 1);
+    T_EQ(test_splat_tile_builds, 1);
+    R_ResetGroundTextures(); test_splat_tile_builds = 0;
+    T_EQ(R_TestCaptureSplatPass(test_splats_repeated), 1); T_EQ(test_splat_tile_builds, 1);
+    ri.CvarString = old; R_ResetGroundTextures();
+}
+
+/* A live ground rebuild changes cached Z immediately; moving the rectangle changes its clip/UV key. */
+static void test_splats_terrain_changes(void) {
+    texture_t texture = {0};
+    vec2_t mins = {24, 20}, maxs = {108, 112}, uv0 = {.25f, .125f}, uv1 = {.5f, .75f};
+    R_BeginSplatBatch(R_SPLAT_SHADER(&tr.shader_default));
+    FOR_LOOP(i, 3) {
+        if (i == 1) {
+            ((war3mapVertex_t *)tr.world->vertices)[1].accurate_height += 256;
+            R_UpdateGroundSegment(tr.world, 0, 0);
+        }
+        if (i == 2) { mins.x += 8; maxs.x -= 4; }
+        FOR_LOOP(j, 2) R_TestProductionRenderRectSplatUV(&MAKE(rectSplatParams_t, .mins = &mins, .maxs = &maxs,
+            .uv_mins = &uv0, .uv_maxs = &uv1, .texture = &texture,
+            .shader = R_SPLAT_SHADER(&tr.shader_default), .color = COLOR32_WHITE));
+    }
+    R_EndSplatBatch();
+}
+
+TEST(renderer_terrain, splat_cache_tracks_live_heights_and_exact_rectangle) {
+    cstring_t (*old)(cstring_t, cstring_t) = ri.CvarString;
+    vertex_t expected[128];
+    ri.CvarString = test_splat_cache_cvar; splat_cache_on = false; R_ResetGroundTextures();
+    T_EQ(R_TestCaptureSplatPass(test_splats_terrain_changes), 1);
+    uint32_t count = splat_capture.count; T_ASSERT(count <= 128);
+    memcpy(expected, splat_capture.vertices, count * sizeof(*expected));
+    splat_cache_on = true; R_ResetGroundTextures(); test_splat_tile_builds = 0;
+    T_EQ(R_TestCaptureSplatPass(test_splats_terrain_changes), 1);
+    T_EQ(test_splat_tile_builds, 3); T_EQ(splat_capture.count, count);
+    T_EQ(memcmp(expected, splat_capture.vertices, count * sizeof(*expected)), 0);
+    ri.CvarString = old; R_ResetGroundTextures();
+}
+
+/* Cross the real scratch-buffer limit without assuming its exact flush threshold. */
+static void test_splats_capacity(void) {
+    texture_t texture = { .texid = 1 };
+    vec2_t mins = {24, 20}, maxs = {108, 112};
+    R_BeginSplatBatch(R_SPLAT_SHADER(&tr.shader_default));
+    FOR_LOOP(i, GROUND_VERTEX_BUFFER_CAPACITY) R_AddRectSplat(&mins, &maxs, &texture, COLOR32_WHITE);
+    R_EndSplatBatch();
+}
+
+TEST(renderer_terrain, atlas_splat_batch_preserves_vertices_and_texture_run_order) {
+    T_EQ(R_TestCaptureSplatPass(test_splats_immediate), 4);
+    vertex_t expected[128];
+    uint32_t count = splat_capture.count;
+    T_ASSERT(count > 0 && count <= sizeof(expected) / sizeof(*expected));
+    memcpy(expected, splat_capture.vertices, count * sizeof(*expected));
+    T_EQ(R_TestCaptureSplatPass(test_splats_batched), 2);
+    T_EQ(splat_capture.count, count);
+    FOR_LOOP(i, count) {
+        T_ASSERT(!memcmp(&expected[i].position, &splat_capture.vertices[i].position, sizeof(vec3_t)));
+        T_ASSERT(!memcmp(&expected[i].texcoord, &splat_capture.vertices[i].texcoord, sizeof(vec2_t)));
+        T_ASSERT(!memcmp(&expected[i].color, &splat_capture.vertices[i].color, sizeof(color32_t)));
+    }
+    T_EQ(R_TestCaptureSplatPass(test_splats_alternating), 4);
+    T_EQ(splat_capture.count, count);
+    T_EQ(R_TestCaptureSplatPass(test_splats_shaders), 2);
+    T_EQ(splat_capture.count, count);
+    T_EQ(R_TestCaptureSplatPass(test_splats_immediate), 4);
+    uint32_t draws = R_TestCaptureSplatPass(test_splats_capacity);
+    T_ASSERT(draws > 1 && draws < 32);
+    T_EQ(splat_capture.count, count / 4 * GROUND_VERTEX_BUFFER_CAPACITY);
 }
 
 TEST(renderer_terrain, splat_rect_stops_at_partial_tile_edge) {
@@ -3372,6 +4192,46 @@ TEST(renderer_shader_desc, apply_uploads_only_changed_uniforms) {
     R_ApplyShader(&shader); T_EQ(upload.calls, 3);
     shader.state.color.x = 5; R_ApplyShader(&shader); T_EQ(upload.calls, 4);
     shader.state.mvp.v[0] = 2; R_ApplyShader(&shader); T_EQ(upload.calls, 5);
+    R_DeleteShader(&shader.prog);
+}
+
+/* Consecutive draws change uniforms, not the GL program; switches must still bind the requested program. */
+TEST(renderer_shader_desc, consecutive_draws_bind_only_when_the_program_changes) {
+    sdTestProg_t a = {0}, b = {0};
+    reset_shader(); R_LoadShader(&sd_test, NULL, &a); R_LoadShader(&sd_test, NULL, &b);
+    b.prog.progid++;
+    FOR_LOOP(i, 100) { a.state.color.x = i; R_ApplyShader(&a); }
+    T_EQ(shader_test.uses, 1); T_EQ(shader_test.bound, a.prog.progid);
+    int calls = upload.calls;
+    R_ApplyShader(&b); T_EQ(shader_test.uses, 2); T_EQ(shader_test.bound, b.prog.progid);
+    R_ApplyShader(&a); T_EQ(shader_test.uses, 3); T_EQ(shader_test.bound, a.prog.progid);
+    T_EQ(upload.calls, calls + 3); /* A's unchanged uniforms remain program-owned across the switch. */
+    R_DeleteShader(&b.prog); R_ApplyShader(&a); T_EQ(shader_test.uses, 3);
+    GLuint recycled = a.prog.progid;
+    R_DeleteShader(&a.prog); R_LoadShader(&sd_test, NULL, &a);
+    T_EQ(a.prog.progid, recycled); R_ApplyShader(&a); T_EQ(shader_test.uses, 4);
+    R_DeleteShader(&a.prog);
+}
+
+/* Context/frame invalidation must force a bind without discarding program-owned uniform values. */
+TEST(renderer_shader_desc, binding_reset_and_uncached_mode_preserve_uniform_caches) {
+    sdTestProg_t shader = {0};
+    reset_shader(); R_LoadShader(&sd_test, NULL, &shader);
+    R_ApplyShader(&shader); int calls = upload.calls;
+    R_ResetShaderBinding(true);
+    shaderBindStats_t stats = R_GetShaderBindStats(); T_EQ(stats.requests, 0); T_EQ(stats.binds, 0);
+    FOR_LOOP(i, 4) R_ApplyShader(&shader);
+    T_EQ(shader_test.uses, 2); T_EQ(upload.calls, calls);
+    stats = R_GetShaderBindStats(); T_EQ(stats.requests, 4); T_EQ(stats.binds, 1);
+    R_ResetShaderBinding(false);
+    FOR_LOOP(i, 4) R_ApplyShader(&shader);
+    T_EQ(shader_test.uses, 6); T_EQ(upload.calls, calls);
+    stats = R_GetShaderBindStats(); T_EQ(stats.requests, 4); T_EQ(stats.binds, 4);
+    R_ResetShaderBinding(true); R_ApplyShader(&shader); T_EQ(shader_test.uses, 7);
+    shader.prog.state_size = 0;
+    if (!setjmp(shader_exit)) { R_ApplyShader(&shader); T_ASSERT(false); }
+    T_EQ(shader_test.exitcode, EXIT_FAILURE); T_EQ(shader_test.uses, 7);
+    stats = R_GetShaderBindStats(); T_EQ(stats.requests, 1); T_EQ(stats.binds, 1);
     R_DeleteShader(&shader.prog);
 }
 
