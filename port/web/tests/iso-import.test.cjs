@@ -183,6 +183,8 @@ function makeWorker({estimate, failWritesFor = null, locks = new TestLocks()} = 
   const context = vm.createContext({
     Blob, AbortController, DOMException, DecompressionStream, Uint8Array, DataView, Number, Date, Math,
     navigator: {storage, locks},
+    // DedicatedWorkerGlobalScope defines this property before a strict worker script runs.
+    onmessage: null,
     postMessage: message => messages.push(message)
   });
   context.importScripts = (...scripts) => {

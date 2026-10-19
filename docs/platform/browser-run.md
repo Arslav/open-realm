@@ -34,6 +34,9 @@ source ~/emsdk/emsdk_env.sh
 make web-warcraft3-engine
 ```
 
+An SDK kept inside this checkout can be activated with
+`source build/web/emsdk/emsdk_env.sh`; the project CI currently selects Emscripten `4.0.21`.
+
 The output is `build/web/engine/`. For an unoptimized debug build with symbols:
 
 ```sh
@@ -53,7 +56,9 @@ python3 port/web/serve.py
 ```
 
 It serves `build/web/engine/` at <http://127.0.0.1:8000/> and adds the
-cross-origin isolation headers needed for pthreads. To serve a debug build:
+cross-origin isolation headers needed for pthreads. It binds to loopback by default, serves WASM
+with `application/wasm`, and disables caching so rebuilds are visible after a reload.
+Use `--port` to select another port. To serve a debug build:
 
 ```sh
 python3 port/web/serve.py --directory build/web/engine-debug
@@ -128,12 +133,19 @@ Run the dependency-free browser tests from the repository root with:
 
 ```sh
 node --test port/web/tests/*.test.cjs
+python3 port/web/tests/test_serve.py
 ```
 
 These tests cover ISO parsing, synthetic archive imports, UI and launcher
 behavior. They do not establish compatibility with every retail disc, map,
 browser/device combination or a complete real-data playthrough. Use the native
 application when reliability or performance matters.
+
+The Python check makes real loopback HTTP requests to verify the development server's isolation
+headers, WASM MIME type and error responses. The installer VM harness supplies the worker's
+pre-existing `onmessage` property before running its strict script, matching DedicatedWorkerGlobalScope.
+The October 19 local macOS build linked successfully with SDK 4.0.21; HTTP checks and the 98 browser
+tests passed. This establishes a build/server check, not a rendered game playthrough.
 
 For implementation details, see [Browser platform](browser.md),
 [Browser filesystem](browser-filesystem.md), and
