@@ -157,7 +157,7 @@ The headless `renderer_terrain.atlas_splat_batch_preserves_vertices_and_texture_
 test compares emitted geometry/UV/color against immediate rendering and checks texture,
 shader and capacity boundaries; `renderer_game.retained_event_splats_batch_adjacent_atlas_textures`
 drives the actual retained-event pass, including alpha-phase suppression and expiry.
-See Android credits profiling (`performance.md#android-credits-profiling-october-2026`; section follows in this series).
+See [Android credits profiling](performance.md#android-credits-profiling-october-2026).
 
 `LifespanRepeat` and `UVDecayRepeat` are parsed and retained but not yet applied: their exact retail repeat-count/wrap contract remains unverified. Likewise `BlendMode`, `Water`, and `Sound` are preserved but not guessed into renderer/audio behavior. A used row with one of those unsupported non-default fields produces one bounded warning, so the partial presentation contract is not silent. This keeps the implemented subset deterministic and data-driven without approximating the remaining semantics.
 

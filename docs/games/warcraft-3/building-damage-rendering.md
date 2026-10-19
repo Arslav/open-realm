@@ -97,7 +97,7 @@ path in the list still renders with the existing transform and parent-to-child B
 time mapping. The regression tests are
 `renderer_model.mdx_attachment_query_binds_pose_only_for_a_visible_match` and
 `renderer_game.model_draw_skips_attachment_pose_without_children_and_keeps_child_birth_transform`.
-See Honor attachment profiling (`performance.md#lazy-attachment-poses`; section follows in this series) for the measured motivation.
+See [Honor attachment profiling](performance.md#lazy-attachment-poses) for the measured motivation.
 
 ## Network Contract
 

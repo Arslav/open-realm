@@ -25,7 +25,7 @@ after an external `glUseProgram`. Open Realm's context-owning adapter skips a
 repeated binding within a frame, invalidates at frame/context boundaries and
 on current-program deletion, and preserves program-owned uniform caches. External
 GL users must invalidate before returning control. See the
-binding cache contract (`../renderer-backend.md#implemented-program-binding-cache`; section follows in this series).
+[binding cache contract](../renderer-backend.md#implemented-program-binding-cache).
 Program-owned storage is released before destroying the owning context.
 
 `R_BuildShaderDeclarations` and `R_BuildShaderMain` retain public inspection

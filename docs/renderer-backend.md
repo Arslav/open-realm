@@ -103,6 +103,60 @@ Renderer cvars are registered during common initialization, so the shorter Quake
 console form is also valid: `r_grass 0`, `r_wmos 0`, and `r_stats 1`. `set` remains useful
 for creating an ad-hoc cvar; renderer controls must not rely on that side effect.
 
+### CPU/GPU frame diagnostics
+
+`com_profile 1` adds a one-second `[COM_FRAME]` wall-time report for online,
+server and client stages, including the largest single server call. Its `loops`
+field counts engine calls, not necessarily rendered frames. `client_ms` includes
+graphics/driver waits; these are not sampled CPU-utilization figures. Disabled
+profiling takes no extra performance-counter samples and clears a partial window.
+Use it with `R_STATS`'s `frames`/`elapsed_ms` to distinguish simulation time from
+render/present time. The frame harness covers accumulated windows and disable/reset.
+
+`r_profile 1` enables one-second `[R_CPU]` and `[R_PARTICLES]` reports;
+`r_profile 2` also requests asynchronous elapsed GPU timing. The default is zero
+and the cvar is not archived. CPU stage names are `other`, `fog`, `world`, `entities`,
+`alpha`, `particles`, `scale`, `ui`, `swap` and `sleep`. Each value is milliseconds
+per rendered frame, summed over every view/portrait in that frame. `frame_ms` is the
+renderer BeginFrame-to-EndFrame interval, including swap/sleep; it excludes server
+and client processing before BeginFrame. These are wall times, including driver
+blocking, not sampled CPU execution or individual GPU costs.
+When shadow maps are compiled in, their pre-view pass is included in `fog`; the
+Honor APK used here has shadow maps disabled.
+The historical `sleep` field stays zero after removal of the renderer's unconditional
+post-swap `SDL_Delay(1)`. Frame caps are paced by `Com_LimitFrameRate` in the main
+loop, outside the renderer timer; VSync remains controlled through SDL's swap interval.
+The production `R_EndFrame` and limiter paths are covered by `test-renderer-frame`.
+
+The particle report counts surviving particles, batches, texture-limit and blend-change
+flushes, mean textures per batch and uploaded KB per frame. It describes the retained
+particle-list pass; standalone sprites/ribbons drawn from model passes are separate.
+Increasing the texture budget cannot remove blend-change boundaries without changing
+transparent ordering.
+
+GPU timing uses one elapsed query per sampled frame, one in sixteen, with eight
+pending slots. It ends before swap, polls availability without waiting, and skips a
+sample when every slot is occupied. `samples`, `disjoint`, `busy` and `invalid` expose
+measurement quality; `frame_ms=-1` means no valid samples. EXT disjoint events discard
+all outstanding queries. UINT64_MAX and durations larger than the host submission-to-read
+interval plus 1 ms clock tolerance are rejected even if the driver reports ready and
+no disjoint. Queries are released on disable and before GL-context destruction.
+The optional ES EXT / desktop ARB entry points are resolved per context; missing
+support is logged and CPU diagnostics remain available. See the
+[EXT specification](https://registry.khronos.org/OpenGL/extensions/EXT/EXT_disjoint_timer_query.txt).
+
+Do not add per-pass GPU elapsed values on a tile renderer. An experimental Honor capture
+produced overlapping/frame-sized results for tiny intervals; a subsequent whole-frame
+capture returned implausible values despite ready=true/disjoint=false. Those captures
+are rejected as GPU evidence. The final bounded query path reports invalid samples
+explicitly; use resolution sensitivity and CPU/swap timings when GPU results are absent.
+Device observations and the capture tool are in [Android profiling](android.md#next-on-device-capture)
+and [WC3 performance](games/warcraft-3/performance.md).
+
+`tests/test_renderer_profile.c` drives production query creation, delayed availability,
+64-bit results, disjoint before/after reads, invalid durations, ring saturation,
+disable/re-enable, context teardown and unsupported timers using fake GL/SDL boundaries.
+
 ### WoW Human-start checkpoint (2026-08-18)
 
 At 2048x1536 with 4x MSAA, the forward-facing Human start submits about 1,744 draws,
@@ -141,6 +195,33 @@ OpenGL-on-Metal path may still present at the display's 120 Hz ceiling.
 The FPS overlay uses one batched system-font submission and displays
 `FPS ##  Drawcalls ##`; its draw count is captured before the overlay itself.
 
+## Particle submission
+
+`renderer/r_particles.c` uploads surviving particles once per view pass. Packets retain
+particle/triangle order and share up to four textures with one blend mode; a fifth
+distinct texture or a blend change flushes the packet. A second list walk reconstructs
+the same draw ranges without a per-particle packet allocation.
+
+The third texture-coordinate component selects one of four constant-index sampler
+lookups. This retains eight shader attributes and works with the GL/GLES shader dialects.
+The sampler units are 0/3/4/5: unit 1 stays bound to the model shadow map and unit 2 to
+FOW. Immediate billboards/ribbons can execute between model draws, so using unit 1
+would corrupt the following model's shadow lookup. Their selectors start at zero and
+their immediate upload replaces the shared VBO normally.
+
+Common matrices/FOW and culling are set once per uninterrupted particle pass.
+Texture bindings are compared against a stack-local array during that pass; no binding
+state survives into the next view or standalone sprite/ribbon. Every immediate draw
+starts a fresh binding scope, and the original cull state is restored before returning.
+This preserves external model/UI binding changes and reserved shadow/FOW units.
+`particle_pass_reuses_bindings_and_restores_culling_before_immediate_sprites` covers
+four alternating blend draws, deliberate binding clobbers between passes and an
+immediate sprite; the fixture's texture binds fall from twenty to five.
+
+The tests capture real production upload/range/state calls in `tests/test_mdx_ui.c`.
+For the Honor measurements and vertex-storage cost, see
+[ordered particle batches](games/warcraft-3/performance.md#ordered-particle-batches-with-four-textures).
+
 ## Target API shape
 
 Do **not** emulate OpenGL 1.x (`glEnable(GL_LIGHTING)`, fog modes, texture-env, uber-shader permutations).
@@ -164,6 +245,35 @@ See [model-shader.md](architecture/model-shader.md). They are not public `lighti
 Typical draw shape: bind pipeline if changed, push root once, draw.
 
 ## Backend state cache (Phase 1 of #89)
+
+### Implemented program binding cache
+
+`r_shader.c` owns the current program observed by this renderer context. Its
+GL-call adapter skips only an unchanged `glUseProgram`; typed uniform
+validation, comparison and changed-value uploads still run on every submission.
+The reusable `gl_shader` module remains byte-identical and binds every time for
+external callers. The engine scopes its two GL-call overrides around the unity
+include with `push_macro`/`pop_macro`, restoring loader/test macros afterwards.
+The paired deletion adapter invalidates a current name before deleting it,
+including failed-link cleanup, so a recycled GL name binds again.
+
+`R_BeginFrame` invalidates the binding once per frame and samples the diagnostic
+`r_program_cache` cvar once (default 1; 0 forces all binds for matched A/B captures).
+Context creation and teardown invalidate as well. All in-renderer program binds
+must use this adapter; external GL users must invalidate before returning control.
+Portraits and nested views share the context and retain ordinary program switches.
+Resetting the binding does not discard program-owned uniform values.
+
+`R_STATS` includes mean `program_requests` and `program_binds` per frame. They
+count validated submissions and actual GL binds, not draw calls or uniform
+uploads. The in-engine probe uses the paired deletion adapter; standalone
+module callers retain its always-bind semantics. Production shader tests cover a long same-
+program run with changing uniforms, A/B/A switches, noncurrent/current deletion,
+name reuse, reset, uncached mode and rejected submissions. The real frame-entry
+test verifies per-frame invalidation and live mode changes. Emulator profiling
+and A/B evidence belong in [WC3 performance](games/warcraft-3/performance.md).
+
+### Remaining raster-state work
 
 Doom 3's `R_*` / `RB_*` split and `GL_State(uint64)` XOR remain the **GL implementation** of cheap blend/depth/cull
 packets. Frontend never issues `glEnable` / `glBlendFunc` / `glDepthMask`. Backend owns those calls.

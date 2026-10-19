@@ -194,8 +194,8 @@ uses the same sampled affine matrices and preserves the same alpha ordering.
 same uniform shader only when an existing complete packet fits all geoset
 palettes, preserving packet boundaries. For a texture-only device comparison,
 set both `r_mdx_uniform_auto` and `r_mdx_uniform_instancing` to zero.
-See automatic transport measurements (`../games/warcraft-3/performance.md#automatic-mdx-uniform-transport-on-android-october-17`; section follows in this series).
-See WC3 performance (`../games/warcraft-3/performance.md#honor-200-actor-performance`; section follows in this series)
+See [automatic transport measurements](../games/warcraft-3/performance.md#automatic-mdx-uniform-transport-on-android-october-17).
+See [WC3 performance](../games/warcraft-3/performance.md#honor-200-actor-performance)
 for eligibility, cache lifetime, regression coverage and device measurements.
 
 ## Extension rule

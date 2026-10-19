@@ -31,6 +31,7 @@ This codebase is inspired by **Quake 2** (id Software). The developer is deeply 
 | Vendored Lua 5.4 and the libxml2-free XML parser (`common/tinyxml.h`) | [docs/vendored-dependencies.md](docs/vendored-dependencies.md) |
 | UI screen authoring, FDF conventions, ConsoleUI, stb_fdf.h | [docs/ui-authoring.md](docs/ui-authoring.md) |
 | Test-suite performance measurement and parallel execution | [docs/test-performance.md](docs/test-performance.md) |
+| Retaining optimization experiments, disabled variants, source archives and cleanup boundaries | [docs/performance-experiments.md](docs/performance-experiments.md) |
 | WoW character display, DBC/skin-section/component-texture rules | [docs/wow-character.md](docs/wow-character.md) |
 | WoW grass: active paths, wind-sway math, phase decorrelation, density formula, constants | [docs/games/world-of-warcraft/GRASS_TECH.md](docs/games/world-of-warcraft/GRASS_TECH.md) |
 | WoW magic schools, damage types, buffs/debuffs, CC, status effects | [docs/games/world-of-warcraft/magic-and-effects.md](docs/games/world-of-warcraft/magic-and-effects.md) |
@@ -182,6 +183,7 @@ This codebase is inspired by **Quake 2** (id Software). The developer is deeply 
 | WC3 main-menu transparent layers, MenuZFog, #620/#621 regression history and visual checks | [docs/games/warcraft-3/main-menu-rendering.md](docs/games/warcraft-3/main-menu-rendering.md) |
 | WC3 campaign loading lifecycle, texture references, unused FDF art, cliff transitions | [docs/games/warcraft-3/loading-and-assets.md](docs/games/warcraft-3/loading-and-assets.md) |
 | WC3 perf hot spots: MDX bone/geoset setup, shadow batching, client/server entity scans | [docs/games/warcraft-3/performance.md](docs/games/warcraft-3/performance.md) |
+| WC3 mixed-army Android benchmark: 20 unit types, props, real combat, repeatable stages and Honor profiles | [docs/games/warcraft-3/combat-benchmark.md](docs/games/warcraft-3/combat-benchmark.md) |
 | WC3 RAM profiling: MDX buffer overhead, FDF pools, texture residency, loopback budgets | [docs/games/warcraft-3/memory.md](docs/games/warcraft-3/memory.md) |
 | SC2 dropped-unit selection/control, shared WC3 routing, M3 picking and selection rings | [docs/games/starcraft-2/selection-and-control.md](docs/games/starcraft-2/selection-and-control.md) |
 | SC2 HUD layout pipeline (sc2BaseFrame_t → uiFrame_t, layer IDs, stat bindings) | [docs/games/starcraft-2/hud-layout-pipeline.md](docs/games/starcraft-2/hud-layout-pipeline.md) |
@@ -528,6 +530,14 @@ Follow Quake 2's pattern. Never fail silently, never crash, never log per-frame.
 
 ## PR Hygiene and Protocol Stability
 
+- **During optimization, prepare ordinary/distribution builds only when the user explicitly requests them.** Build only the test/profile artifacts needed for the current experiment; do not add a normal APK or desktop packaging pass as a routine finishing step. Reuse a suitable existing test build when possible. This is the project owner's instruction of October 18, 2026.
+- **Enable optimizations with verified benefit by default on the measured target platforms.** After correctness/quality checks and representative comparisons pass, do not ask separately to enable a successful optimization. Keep its on/off path and measurements; variants with uncertain benefit or regressions remain selectable experiments. This is the project owner's instruction of October 18, 2026.
+- **Preserve optimization experiments even when a benchmark shows no gain or a regression.** Keep a complete opt-in
+  implementation with a documented toggle, or preserve its code/tests as an indexed branch or reproducible patch/source
+  archive before removing active wiring. Record the baseline, dependencies, device/scene/settings and measured result;
+  changed bottlenecks may make the experiment useful later. Never treat missing speedup alone as permission to discard
+  its implementation. Archives must live outside the Git repository. Cleaning old binaries must preserve
+  archived code, recipes, tests and benchmark evidence. Follow [experiment retention](docs/performance-experiments.md).
 - **Add commits; never rewrite history or force-push.**
 - **Commit messages and PR descriptions describe only what the change does and why.** Do not name other games or engines (Quake 2, etc.) or justify the change by comparison with them; state the problem, the behavior now, and the tests. Reference-engine comparisons belong in code comments or docs only where they explain a contract.
 - **Network wire format stays bit-compatible unless explicitly approved.** Network flags and message layouts remain unchanged. Save formats follow the strict rejection policy above; bump their version when their contract changes. State network and save-format impact separately in the PR description.

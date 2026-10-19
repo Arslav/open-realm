@@ -37,6 +37,38 @@ Temporary `fprintf(stderr, ...)` counters measured geoset dimensions, frame occu
 loopback high-water marks, sheet cursor positions, and resident model references. They were removed after ROC/TFT runs.
 No optimization or capacity change was implemented by this investigation.
 
+## Android pose, batch and fog scratch (October 2026)
+
+The later [200-actor optimization](performance.md#honor-200-actor-performance)
+adds a bounded 4 MiB MDX matrix arena plus 1024 pose keys. This is a static
+scratch budget, not a measured 4 MiB increase in physical footprint. Entries
+expire with render inputs and model lifetime; they do not retain model objects.
+Move deflection uses a 257-pointer stack list only during one search; it never
+persists per-unit neighbour state. The 128 KiB track-bound cache prototype was
+removed after its device comparison failed to establish a gain.
+Instance placement uses at most 256 mat4s (16 KiB). Bone upload staging is a
+single reusable allocation sized to actual packet rows, not one allocation per
+actor; three RGBA32F texels retain each affine matrix. GPU texture storage grows
+to a bounded multiple of required rows and CPU/GPU resources are released at
+renderer shutdown. Uniform packets keep the existing 128-matrix shader limit
+and do not upload a bone texture; Android's automatic transport can mix them
+with texture-backed packets.
+
+The [parallel pose preparation](performance.md#parallel-mdx-preparation-on-android-october-18)
+shares that 4 MiB arena. At the three-worker limit, 128 KiB of matrix scratch
+per worker, 512 job records and additional slot metadata total approximately
+0.5 MiB, plus SDL thread stacks. Worker contexts are allocated lazily and freed
+at map/renderer teardown. No per-worker 4 MiB cache or new GPU palette is added.
+This storage is outside per-model geometry allocation counters; measure actual
+resident footprint separately.
+
+Exact FOW blocker queries use lazily allocated summed-area scratch of
+`4 * (width+1) * (height+1)` bytes, about 258 KiB for a 256×256 grid. It is rebuilt
+from the current bitmap per update and released by `G_FowShutdown`. Allocation
+failure keeps the original exact scan. None of this storage is per unit or
+serialized. These are allocation budgets; a new on-device footprint measurement
+is required before claiming a net RAM change.
+
 ## Largest opportunities
 
 | Owner | Evidence on ROC Human02 | Proposed work and estimated savings |
@@ -155,3 +187,79 @@ The socket suites require execution outside the filesystem/network sandbox; the 
 Any implementation should additionally cover repeated map changes, return-to-menu/loading transitions, representative large maps,
 network bursts, and visual comparison of both archive variants. Re-measure without stack logging at the same drawable and scene age.
 See [performance](performance.md) for CPU hot spots and [loading and assets](loading-and-assets.md) for registration lifecycle.
+
+## Optional MDX submission streams (October 18, 2026)
+
+`r_mdx_submit_cache` exposes the original shared matrix stream (0), model-owned
+streams with transient attributes (1), and model-owned streams with persistent
+instance VAOs (2). The experiment initially defaults to 0. The extra VBO and
+VAOs are created only at the first positive-mode packet of each model. Mode 0
+in a fresh process allocates no extra GPU objects. The extra CPU metadata is one
+VBO name per model and a pointer/count pair per geoset.
+
+Positive modes retain one stream per actually batched model, with the last
+packet's `actor_count * sizeof(mat4_t)` data store (at most 16 KiB for 256 actors),
+and one extra VAO plus 4-byte name per authored UV channel. Geometry and index
+storage are shared; driver VAO/backing-store overhead is device-specific and
+has not been measured as a net RAM delta. A first-use allocation may hitch and
+is outside the warmed FPS window. `MDX_ReleaseBuffers` deletes both VAO families
+before deleting the model buffers, and terrain-fitted copies clear borrowed
+instance metadata before constructing their own resources. The GL-state test
+checks release order, double-channel UVs and reuse of the same driver IDs.
+
+See [WC3 performance](performance.md) for the paired Honor results and
+[experiment retention](../../performance-experiments.md) for the preservation contract.
+
+## Optional CPU draw packets (October 18, 2026)
+
+`r_mdx_packet_prepare 1/2` reserves a bounded 4 MiB CPU arena on first use.
+Android defaults to 2 at the owner's request; other platforms default to 0.
+The owner lays out a header, per-geoset metadata/color, per-layer alpha/texture/UV,
+expanded geoset palettes and three vec4 rows per authored node. Payloads are
+filled by independent pose jobs in mode 2, or by the owner after joining in
+mode 1. There is no per-frame allocation/free loop; the pose epoch resets the
+cursor and invalidates references. Model-batch shutdown clears the pose cache
+before freeing the arena. Mode 0 in a fresh process allocates none of it.
+
+The ceiling bounds total packet storage; an individual actor can consume much
+more than a compact pose when many geosets repeat the same bone palette. Arena
+overflow keeps the original on-demand draw path. Packet pointers add one field
+per pose slot and queued actor, plus a lane index per pose job. The existing
+worker contexts are reused; there are no new threads or GL objects. These are
+storage limits, not a measured net RSS delta. See
+[packet preparation and validation](performance.md#parallel-draw-packet-preparation-october-18).
+
+## Optional larger palette blocks (October 18, 2026)
+
+`r_mdx_palette_ubo 1/2` lazily allocates a WC3-private matrix staging array and
+uniform buffer, each bounded by the queried block size and a 64-KiB ceiling.
+Honor Mali-G52 MC2 permits 1,024 matrices (64 KiB). Mode 1 deliberately uses the
+same allocation with a 128-matrix packet limit to isolate transport cost from
+larger packets. Mode 2 raises only the number of complete actor palettes per
+packet; the instance placement stream remains bounded to 256 matrices/16 KiB.
+Per-geoset orphaning can create transient driver storage beyond the live buffer
+size; this is not a claim of peak GPU memory. CPU staging, shader source/program
+and the buffer are released by model-batch shutdown before context destruction.
+Mode 0 does not allocate these optional resources. Android now defaults to
+mode 2 after the verified Honor comparison and owner's activation instruction;
+other platforms remain at 0. The previous CPU packet
+arena and submission experiments remain independently selectable. See the
+[palette trial](performance.md#larger-uniform-block-palette-packets-october-18).
+
+## Ability-query and terrain-decal CPU caches (October 18, 2026)
+
+The ability-query trial reserves 512 list pointers (4 KiB on arm64), a
+1,024-entry registry pointer index (8 KiB), and 2,048 rawcode/generation results
+(24 KiB). Positive mode lazily allocates one decoded rawcode array plus source
+text/header per occupied list slot. Collision replacement frees the old entry;
+`InitAbilities` and `ShutdownUnitData` free all entries. Allocation follows the
+complete source list, with no per-unit copy or fixed ability-count truncation.
+There are no new serialized fields or GPU allocations.
+
+The terrain-splat cache reserves 512 tile entries in renderer BSS. The arm64
+renderer symbol reports `0xaa000` bytes: **680 KiB**, using 30 vertices per tile
+and the current 44-byte `vertex_t`. Generation invalidation reuses that storage;
+no per-frame allocation or extra GPU buffer is added. The forced-visibility
+zero-source path reads existing reference counts and adds no retained storage.
+These are object-storage sizes, not measured net RSS changes. See
+[the CPU-cache contracts](performance.md#ability-visibility-and-splat-cpu-work-october-18).

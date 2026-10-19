@@ -452,7 +452,7 @@ with `make HOMEBREW_PREFIX="$PWD/build/android/sdl-host" test` in this local env
 it needs ordinary local UDP access for networking tests.
 
 The first effect-submission optimization and emulator profile interpretation are in
-WC3 performance (`games/warcraft-3/performance.md#android-credits-profiling-october-2026`; section follows in this series).
+[WC3 performance](games/warcraft-3/performance.md#android-credits-profiling-october-2026).
 
 ## Honor performance investigation
 
@@ -543,25 +543,25 @@ call-site resolution. The `app_profiler.py` helper above additionally copies sym
 its full workflow was exercised on the emulator, while the direct commands were used on Honor.
 Inspect the native `org.openrealm.wc3:game` process separately from the Java launcher and audio
 threads. CPU samples alone cannot measure GPU execution or time blocked in presentation.
-The whole game-loop Honor profile (`games/warcraft-3/performance.md#whole-game-loop-cpu-and-scheduler-profile-october-17`; section follows in this series)
+The [whole game-loop Honor profile](games/warcraft-3/performance.md#whole-game-loop-cpu-and-scheduler-profile-october-17)
 combines matching `-O2 -g` symbols, all-thread sampling and a separate
 switch/wakeup/EGL trace. It records the distinction between CPU execution,
 runnable delay, blocked time and inclusive function percentages.
-The parallel pose probe (`games/warcraft-3/performance.md#parallel-pose-feasibility-on-honor-october-17`; section follows in this series)
+The [parallel pose probe](games/warcraft-3/performance.md#parallel-pose-feasibility-on-honor-october-17)
 compares isolated CPU work across lanes and CPU placements; its throughput
 numbers are not game FPS or an application thread-affinity policy.
-The Android MDX worker implementation (`games/warcraft-3/performance.md#parallel-mdx-preparation-on-android-october-18`; section follows in this series)
+The [Android MDX worker implementation](games/warcraft-3/performance.md#parallel-mdx-preparation-on-android-october-18)
 documents current defaults, cache ownership, submission order and the separate
 first-fight comparisons used for game acceptance.
-The effect geometry modes (`games/warcraft-3/performance.md#effect-geometry-modes-and-retained-experiments-october-18`; section follows in this series)
+The [effect geometry modes](games/warcraft-3/performance.md#effect-geometry-modes-and-retained-experiments-october-18)
 document `r_mdx_effect_instancing`: 0 retains original eligibility, 1 expands
 eligibility with normal palette selection, and Android's default 2 combines
 expanded eligibility with uniform packets. The no-gain mode remains available
-under the experiment retention rule (`performance-experiments.md`; documentation follows in this series).
+under the [experiment retention rule](performance-experiments.md).
 The Honor extension log advertises `GL_EXT_disjoint_timer_query`, but extension presence
 does not establish valid timings. The current optional asynchronous profiler rejects
 disjoint and implausible results; this Honor driver has returned invalid durations.
-See CPU/GPU diagnostics (`renderer-backend.md#cpugpu-frame-diagnostics`; section follows in this series) for the contract.
+See [CPU/GPU diagnostics](renderer-backend.md#cpugpu-frame-diagnostics) for the contract.
 
 The bounded capture helper preserves imported archives, performs a fresh launch, warms
 up from `G_ClientBegin`, records the requested window and force-stops afterward:
@@ -616,7 +616,7 @@ its raw `averageFPS`; do not clear prior diagnostics. `--timestats -enable` /
 returns permission errors on this Honor, and MTK GPU frequency/utilization
 files under `/sys/kernel/ged/hal/` and `/proc/gpufreq/` are also unreadable.
 The trace's CPU-frequency events and scheduler slices remain usable. See the
-200-actor measurements (`games/warcraft-3/performance.md#honor-200-actor-performance`; section follows in this series).
+[200-actor measurements](games/warcraft-3/performance.md#honor-200-actor-performance).
 
 On this Honor, the native process working directory is `/`; the renderer's
 relative `screenshots/shotNNNN.jpg` write fails there. Physical framebuffer QA
@@ -634,7 +634,7 @@ The October 18 exact sight-cache trial exposes `wc3_fow_cache` (Android default
 `1`, other platforms `0`) and `wc3_fow_stats`. The independent final test-APK
 B/D/D/B capture gives 17.985 → 18.911 FPS at 67% render on the mixed 200-starting-unit
 first combat. Its code, tests and on/off paths are retained. See
-measured results (`games/warcraft-3/performance.md#exact-sight-footprint-reuse-on-honor-october-18`; section follows in this series)
+[measured results](games/warcraft-3/performance.md#exact-sight-footprint-reuse-on-honor-october-18)
 and the [fog cache contract](games/warcraft-3/fog-and-cinematics.md#exact-sight-footprint-cache).
 
 The subsequent MDX submission experiment is opt-in: `set r_mdx_submit_cache 0`
@@ -643,7 +643,7 @@ also selects persistent instance VAOs. It defaults to 0 on all platforms. Six
 Honor windows show only a small improvement (18.371 -> 18.828 FPS for mode 1;
 18.731 for mode 2); a separate profile still attributes about 25.6% of main
 userspace CPU to the Mali driver. The preceding working APK is restored after
-these tests. See submission and concurrency findings (`games/warcraft-3/performance.md#mdx-submission-bindings-and-concurrency-audit-october-18`; section follows in this series).
+these tests. See [submission and concurrency findings](games/warcraft-3/performance.md#mdx-submission-bindings-and-concurrency-audit-october-18).
 
 The independent CPU packet trial uses `r_mdx_packet_prepare 0/1/2`: original
 on-demand work, owner-prepared packets, or preparation inside existing pose jobs.
@@ -657,7 +657,7 @@ APK/settings. At the owner's subsequent request, the Android build now defaults
 to **2** while other platforms remain at 0. `set r_mdx_packet_prepare 0` disables
 the new preparation; mode 1 remains available. The ordinary Android launcher
 keeps its normal startup flow, without a forced test map or credits scene.
-See packet preparation (`games/warcraft-3/performance.md#parallel-draw-packet-preparation-october-18`; section follows in this series)
+See [packet preparation](games/warcraft-3/performance.md#parallel-draw-packet-preparation-october-18)
 for the bounded arena, test coverage and measurements.
 
 The larger-packet trial adds `r_mdx_palette_ubo 0/1/2`: existing
@@ -665,7 +665,7 @@ transport, UBO with the original 128-matrix packet cap, or UBO with a queried
 larger cap (1,024 on Honor). It preserves exact animation/depth math and uses
 Android's current CPU packet mode 2. `MDX_BATCH block_packets/bone_limit` prove
 activation. A standalone EGL readback of the production shader/upload passes
-on Mali at palette indices 64, 129 and 194. See the larger-packet trial (`games/warcraft-3/performance.md#larger-uniform-block-palette-packets-october-18`; section follows in this series)
+on Mali at palette indices 64, 129 and 194. See the [larger-packet trial](games/warcraft-3/performance.md#larger-uniform-block-palette-packets-october-18)
 for the measured comparison, limitations and restoration record.
 
 The six-window same-APK comparison gives 18.585 FPS original, 18.865 with a
@@ -686,7 +686,7 @@ Its separate unprofiled first combat gives 20.397 FPS at 67% render. Two
 20-second, 500-Hz userspace CPU profiles agree on roughly 35% server / 65% client
 and 23–24% Mali driver leaf CPU on the main thread. A separate complete scheduler
 trace shows 78.25% running and about 8.99 ms/swap blocked inside EGL, which is
-not a GPU timer. See the profile and concrete next targets (`games/warcraft-3/performance.md#honor-profile-after-larger-packets-october-18`; section follows in this series)
+not a GPU timer. See the [profile and concrete next targets](games/warcraft-3/performance.md#honor-profile-after-larger-packets-october-18)
 and raw evidence/recipes (`$OPENREALM_EXPERIMENTS_DIR/warcraft-3/optimization-archive/post-wide-profile-20261018/README.md`, external archive).
 The tested APK now remains installed with mode 2 saved in the original config;
 all other backed-up settings, campaign progress and save/checkpoint hashes are
@@ -706,5 +706,5 @@ the new defaults as 0, and explicit settings select each comparison. It remains
 installed with ability/visibility saved as 1 in the original config, existing
 palette mode 2 retained, and the test-only startup map/bindings/profiling removed.
 All current save/checkpoint hashes and the other backed-up files are verified.
-See contracts, all windows and CPU evidence (`games/warcraft-3/performance.md#ability-visibility-and-splat-cpu-work-october-18`; section follows in this series)
+See [contracts, all windows and CPU evidence](games/warcraft-3/performance.md#ability-visibility-and-splat-cpu-work-october-18)
 and the complete retained trial (`$OPENREALM_EXPERIMENTS_DIR/warcraft-3/optimization-archive/cpu-work-families-20261018/README.md`, external archive).
